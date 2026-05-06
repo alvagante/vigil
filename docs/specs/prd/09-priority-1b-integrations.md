@@ -1,0 +1,252 @@
+# 9. Priority 1b Integrations — Proxmox, AWS, Azure
+
+These three integrations extend Phase 1 with provisioning capability. They are at the same priority level as the Phase 1 integrations and are implemented after the core four are stable. Each provides Inventory, Facts, and Provisioning — and each populates the journal from real-time API event queries against the underlying tool, not from local state inference.
+
+## 9.1 Common requirements for cloud and hypervisor provisioning
+
+| ID | Requirement |
+|----|-------------|
+| `PROV-COM-001` | Provisioning-capable plugins **MUST** populate the journal from real-time API queries against the upstream tool's event log, not from locally inferred state. |
+| `PROV-COM-002` | Provisioning-capable plugins **MUST** report state transitions during a provisioning flow (pending → creating → running → ready) in real time to the user. |
+| `PROV-COM-003` | Provisioning-capable plugins **MUST** ensure that newly created nodes appear in unified inventory within one inventory refresh cycle of the create operation completing. |
+| `PROV-COM-004` | Provisioning-capable plugins **MUST** display resource discovery (templates, images, sizes, networks, regions) before the user submits a create request, with the available options refreshed against the source. |
+| `PROV-COM-005` | Provisioning-capable plugins **MUST NOT** initiate billable cloud operations without prior RBAC and per-action permission checks. |
+| `PROV-COM-006` | Provisioning-capable plugins **MUST** make every provisioning action attributable to the initiating user, captured in both the journal and the audit trail. |
+| `PROV-COM-007` | Provisioning-capable plugins **MUST** apply per-integration concurrency limits to prevent overwhelming upstream APIs. |
+| `PROV-COM-008` | Provisioning-capable plugins **MUST** distinguish "node managed by this integration" from "any node visible at the same identity" — destruction operations **MUST NOT** target a node the integration did not create or import as managed. |
+
+## 9.2 Proxmox
+
+Proxmox is the on-prem hypervisor target for Phase 1b. It manages QEMU VMs and LXC containers in clustered or standalone deployments.
+
+### 9.2.1 Inventory
+
+| ID | Requirement |
+|----|-------------|
+| `PROX-101` | The Proxmox plugin **MUST** retrieve the list of VMs and LXC containers across all cluster nodes via the Proxmox API. |
+| `PROX-102` | The plugin **MUST** report per node: VM/LXC ID, name, type (qemu / lxc), status (running, stopped, paused, unknown), cluster node hosting the guest, allocated CPU and memory. |
+| `PROX-103` | The plugin **MUST** present cluster nodes themselves as inventory items (the hypervisor hosts), distinguishable from guests. |
+| `PROX-104` | Inventory **MUST** support pagination and **MUST** retrieve only the requested page from the Proxmox API where the API supports it. |
+| `PROX-105` | The plugin **MUST** declare its identity confidence: VM/LXC IDs are stable within a cluster but not unique across clusters; guest hostname is best-effort and not always present. |
+
+### 9.2.2 Facts
+
+| ID | Requirement |
+|----|-------------|
+| `PROX-201` | The plugin **MUST** retrieve guest configuration: assigned CPU, memory, disk volumes (with sizes and storage backing), network interfaces (with bridge / VLAN / model), boot order, OS type. |
+| `PROX-202` | The plugin **MUST** retrieve current resource usage: CPU usage, memory usage, disk I/O statistics, network throughput where the API exposes them. |
+| `PROX-203` | Facts cache TTL default: 5 minutes for configuration data, 30 seconds for current usage. |
+
+### 9.2.3 Provisioning
+
+| ID | Requirement |
+|----|-------------|
+| `PROX-301` | The plugin **MUST** support VM creation from: template clones, ISO boot, and full clone of an existing VM. |
+| `PROX-302` | The plugin **MUST** support LXC container creation from templates. |
+| `PROX-303` | The plugin **MUST** support destruction of VMs and LXC containers. |
+| `PROX-304` | The plugin **MUST** support lifecycle operations: start, stop, shutdown (graceful), reboot, suspend, resume. |
+| `PROX-305` | Resource discovery **MUST** include: cluster nodes, storage pools (with available space), VM/LXC templates, ISO images, network bridges and VLANs. |
+| `PROX-306` | The plugin **MUST** allow the user to choose the cluster node on which a VM/LXC is created. |
+| `PROX-307` | Create operations **MUST** allow specification of: name, ID (auto or manual), CPU count, memory, disk size, storage backing, network interface configuration, boot device, OS type, cloud-init parameters where applicable. |
+| `PROX-308` | The plugin **MUST** report task progress for long-running operations (clone, create) by polling Proxmox's task log. |
+
+### 9.2.4 Journal
+
+| ID | Requirement |
+|----|-------------|
+| `PROX-401` | The plugin **MUST** populate journal entries from the Proxmox cluster task log, retrieved via realtime API requests. The plugin **MUST NOT** synthesize journal entries solely from its own observed state changes. |
+| `PROX-402` | Journal contributions include: VM/LXC create, destroy, start, stop, shutdown, reboot, suspend, resume, migrate, clone, snapshot, and any other lifecycle task type Proxmox records. |
+| `PROX-403` | Each journal entry **MUST** carry: the upstream task identifier, initiating user (as recorded by Proxmox), result, duration. |
+
+### 9.2.5 Authentication
+
+| ID | Requirement |
+|----|-------------|
+| `PROX-501` | The plugin **MUST** support API token authentication (preferred) and ticket-based username/password authentication. |
+| `PROX-502` | The plugin **MUST** verify TLS certificates by default. A skip-verify mode **MAY** be exposed for development with a clear warning. |
+| `PROX-503` | Credentials **MUST** be handled through the platform's secrets-aware mechanism. |
+
+### 9.2.6 Configuration schema
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `endpoint` | yes | Proxmox API base URL (e.g., `https://pve:8006`) |
+| `auth.method` | yes | `token` or `password` |
+| `auth.token_id` / `auth.username` | conditional | Per method |
+| `auth.token_secret` / `auth.password` | conditional | Per method (secret) |
+| `realm` | no | Authentication realm (default `pam`) |
+| `verify_tls` | no | Default true |
+| `cluster_nodes` | no | Override list of cluster nodes (default: discovered) |
+| `cache_ttl.*` | no | Per-capability TTL overrides |
+| `concurrency` | no | Concurrent provisioning operations limit |
+
+### 9.2.7 RBAC
+
+| ID | Requirement |
+|----|-------------|
+| `PROX-601` | Permissions: `proxmox:inventory:read`, `proxmox:facts:read`, `proxmox:vm:create`, `proxmox:vm:destroy`, `proxmox:vm:start`, `proxmox:vm:stop`, `proxmox:vm:reboot`, `proxmox:vm:suspend`, `proxmox:vm:resume`, `proxmox:lxc:create`, `proxmox:lxc:destroy`, plus the same lifecycle for LXC. |
+| `PROX-602` | Granular per-action and per-target-pool permissions **MUST** be enforceable. |
+
+## 9.3 AWS
+
+AWS provisioning targets EC2 specifically. Other AWS services (RDS, S3, etc.) are out of scope for Phase 1b — they may appear in later priorities only when there is a node-level case for them.
+
+### 9.3.1 Inventory
+
+| ID | Requirement |
+|----|-------------|
+| `AWS-101` | The AWS plugin **MUST** retrieve EC2 instance lists across all configured regions via the AWS API. |
+| `AWS-102` | The plugin **MUST** report per instance: instance ID, name (from `Name` tag), instance type, state (pending, running, stopping, stopped, terminated), region, availability zone, VPC, subnet, all tags. |
+| `AWS-103` | The plugin **MUST** automatically derive groups from: region, VPC, and tags (configurable: which tag keys produce groups). |
+| `AWS-104` | The plugin **MUST** declare identity confidence: instance ID is canonical and unique; private IPs are observable but not unique outside a VPC; public IPs are unstable across stop/start. |
+| `AWS-105` | Inventory **MUST** support pagination via the AWS API's native paging tokens. |
+| `AWS-106` | The plugin **MUST** support multiple AWS accounts as separate integrations and **MUST** support per-integration region scoping. |
+
+### 9.3.2 Facts
+
+| ID | Requirement |
+|----|-------------|
+| `AWS-201` | The plugin **MUST** retrieve per-instance facts: AMI ID, launch time, security groups, IAM instance profile, network interfaces (private and public IPs, ENIs, MAC), block device mappings, key pair, monitoring state, platform (Linux/Windows). |
+| `AWS-202` | Facts cache TTL default: 5 minutes. |
+| `AWS-203` | The plugin **MUST** include Auto Scaling Group membership where applicable (read-only attribute). |
+
+### 9.3.3 Provisioning
+
+| ID | Requirement |
+|----|-------------|
+| `AWS-301` | The plugin **MUST** support EC2 instance launch with the following parameters: AMI, instance type, VPC, subnet, security group(s), key pair, IAM instance profile, root volume size, additional tags, optional user-data. |
+| `AWS-302` | The plugin **MUST** support instance termination. |
+| `AWS-303` | The plugin **MUST** support lifecycle operations: start, stop, reboot, hibernate (where the instance is hibernation-capable). |
+| `AWS-304` | Resource discovery **MUST** include: regions, instance types per region, AMIs (with filtering by owner, by name pattern, by architecture), VPCs per region, subnets per VPC, security groups per VPC, key pairs per region, IAM instance profiles. |
+| `AWS-305` | The plugin **MUST** track create/terminate operations to completion and report instance state transitions in real time. |
+| `AWS-306` | The plugin **MUST NOT** provide AMI authoring, key-pair generation, or VPC/subnet creation. Resource discovery is read-only. |
+
+### 9.3.4 Journal
+
+| ID | Requirement |
+|----|-------------|
+| `AWS-401` | The plugin **MUST** populate journal entries from CloudTrail events (or the equivalent EC2 lifecycle event source) retrieved via realtime API requests. |
+| `AWS-402` | Journal entries **MUST** carry: AWS event ID, event time, the AWS-recorded actor (IAM user/role), event name, affected resource, result. |
+| `AWS-403` | The plugin **SHOULD** correlate Vigil-initiated provisioning with the resulting CloudTrail event (e.g., by capturing the request ID at create time and linking it to the journal entry that materializes from the event log). |
+
+### 9.3.5 Authentication
+
+| ID | Requirement |
+|----|-------------|
+| `AWS-501` | The plugin **MUST** support standard AWS credential mechanisms: access key + secret, IAM role assumption, instance profile (when Vigil runs on EC2), AWS SSO. |
+| `AWS-502` | The plugin **MUST** support cross-account role assumption with external ID. |
+| `AWS-503` | Credentials **MUST** be handled through the platform's secrets-aware mechanism. |
+| `AWS-504` | The plugin **MUST** declare in its administration UI which IAM permissions it requires for declared capabilities, so administrators can scope IAM policies appropriately. |
+
+### 9.3.6 Configuration schema
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `auth.method` | yes | `access_key`, `assume_role`, `instance_profile`, `sso` |
+| `auth.access_key_id` / `auth.secret_access_key` | conditional | For access-key auth |
+| `auth.role_arn` / `auth.external_id` | conditional | For role assumption |
+| `auth.session_duration` | no | Override role-session duration |
+| `regions` | yes | List of regions to monitor |
+| `tag_groups` | no | Tag keys to expose as group dimensions |
+| `cloudtrail.lookback` | no | How far back to query the event log on first sync |
+| `cache_ttl.*` | no | Per-capability TTL overrides |
+| `concurrency` | no | Concurrent API call limit |
+
+### 9.3.7 RBAC
+
+| ID | Requirement |
+|----|-------------|
+| `AWS-601` | Permissions: `aws:inventory:read`, `aws:facts:read`, `aws:ec2:launch`, `aws:ec2:terminate`, `aws:ec2:start`, `aws:ec2:stop`, `aws:ec2:reboot`, `aws:ec2:hibernate`. |
+| `AWS-602` | Per-region and per-account scoping **MUST** be enforceable in role permissions. |
+| `AWS-603` | Per-tag scoping **SHOULD** be enforceable (e.g., a role that may terminate instances tagged `env=dev` but not `env=prod`). |
+
+## 9.4 Azure
+
+Azure provisioning targets Virtual Machines specifically. Container Apps, AKS, App Services, and other higher-level services are out of scope for Phase 1b.
+
+### 9.4.1 Inventory
+
+| ID | Requirement |
+|----|-------------|
+| `AZ-101` | The Azure plugin **MUST** retrieve VM lists across all configured subscriptions via the Azure API. |
+| `AZ-102` | The plugin **MUST** report per VM: VM ID (resource ID), name, location, resource group, size, all tags, power state, provisioning state. |
+| `AZ-103` | The plugin **MUST** automatically derive groups from: location, resource group, and tags (configurable: which tag keys produce groups). |
+| `AZ-104` | The plugin **MUST** declare identity confidence: VM resource ID is canonical and unique; computer name (from inside the OS) is best-effort. |
+| `AZ-105` | Inventory **MUST** support pagination via the Azure API's native paging. |
+| `AZ-106` | The plugin **MUST** support multiple subscriptions as separate integrations or as a single integration scoped to multiple subscriptions. |
+
+### 9.4.2 Facts
+
+| ID | Requirement |
+|----|-------------|
+| `AZ-201` | The plugin **MUST** retrieve per-VM facts: size, image reference, OS disk (size, storage account type), data disks, network interfaces (private and public IPs), availability set/zone, boot diagnostics state. |
+| `AZ-202` | Facts cache TTL default: 5 minutes. |
+| `AZ-203` | The plugin **MUST** include VMSS membership and identity assignments (system or user-assigned managed identity). |
+
+### 9.4.3 Provisioning
+
+| ID | Requirement |
+|----|-------------|
+| `AZ-301` | The plugin **MUST** support VM creation with: name, size, image, location, resource group, network configuration (VNet, subnet, public IP option), OS disk size, admin credential or SSH key. |
+| `AZ-302` | The plugin **MUST** support lifecycle operations: start, stop (preserves billing), restart, deallocate (releases compute charge). |
+| `AZ-303` | Resource discovery **MUST** include: locations, VM sizes per location, OS images (by publisher/offer/sku/version), resource groups, virtual networks, subnets. |
+| `AZ-304` | The plugin **MUST** track long-running operations to completion and report state transitions. |
+| `AZ-305` | The plugin **MUST NOT** provide creation of resource groups, VNets, subnets, custom images. Resource discovery is read-only. |
+
+### 9.4.4 Journal
+
+| ID | Requirement |
+|----|-------------|
+| `AZ-401` | The plugin **MUST** populate journal entries from the Azure Activity Log retrieved via realtime API requests. |
+| `AZ-402` | Journal entries **MUST** carry: Azure correlation ID, event time, caller (Azure AD user/SPN), operation name, affected resource, result. |
+| `AZ-403` | The plugin **SHOULD** correlate Vigil-initiated provisioning with the resulting Activity Log event by capturing the operation correlation ID. |
+
+### 9.4.5 Authentication
+
+| ID | Requirement |
+|----|-------------|
+| `AZ-501` | The plugin **MUST** support: service principal with secret, service principal with certificate, managed identity (when Vigil runs on Azure), Azure CLI fallback for local development. |
+| `AZ-502` | The plugin **MUST** support multi-tenant configurations and explicit tenant ID. |
+| `AZ-503` | Credentials **MUST** be handled through the platform's secrets-aware mechanism. |
+| `AZ-504` | The plugin **MUST** declare the required RBAC roles or specific permissions for its capabilities, so administrators can scope Azure RBAC appropriately. |
+
+### 9.4.6 Configuration schema
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `auth.method` | yes | `service_principal_secret`, `service_principal_cert`, `managed_identity`, `cli` |
+| `auth.tenant_id` | yes (for SPN) | |
+| `auth.client_id` | yes (for SPN) | |
+| `auth.client_secret` / `auth.cert_path` | conditional | (secret) |
+| `subscriptions` | yes | List of subscription IDs |
+| `tag_groups` | no | Tag keys to expose as group dimensions |
+| `activity_log.lookback` | no | How far back to query the Activity Log on first sync |
+| `cache_ttl.*` | no | Per-capability TTL overrides |
+| `concurrency` | no | Concurrent API call limit |
+
+### 9.4.7 RBAC
+
+| ID | Requirement |
+|----|-------------|
+| `AZ-601` | Permissions: `azure:inventory:read`, `azure:facts:read`, `azure:vm:create`, `azure:vm:start`, `azure:vm:stop`, `azure:vm:restart`, `azure:vm:deallocate`. |
+| `AZ-602` | Per-subscription and per-resource-group scoping **MUST** be enforceable. |
+| `AZ-603` | Per-tag scoping **SHOULD** be enforceable. |
+
+## 9.5 Acceptance criteria for Phase 1b
+
+The Phase 1b integrations are considered complete when:
+
+1. Each plugin populates unified inventory with VMs/instances and groups derived from native attributes.
+2. Each plugin gathers facts from the upstream API with the documented field set.
+3. Each plugin performs the documented lifecycle operations end-to-end, with state transitions reported in real time.
+4. Resource discovery returns current options (templates / images / sizes / networks) on demand.
+5. Each plugin populates the journal from real-time API event queries against the upstream tool.
+6. Newly provisioned nodes appear in unified inventory within one refresh cycle.
+7. Authentication mechanisms documented in each subsection work correctly, including credential rotation without restart.
+8. RBAC permissions block unauthorized provisioning.
+9. Per-integration concurrency limits prevent API rate-limit incidents.
+10. Health checks distinguish authentication failure, network failure, and quota exhaustion as separate degradation modes.
+
+---
+
+[← Previous: Bolt, Ansible, SSH](08-priority-1-integrations.md) | [Next: P2/P3 Integrations →](10-priority-2-3-integrations.md)
