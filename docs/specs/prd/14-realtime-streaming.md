@@ -60,9 +60,10 @@ The system has three categories of real-time behavior: **streaming execution out
 
 | ID | Requirement |
 |----|-------------|
-| `STR-601` | Journal entries from external sources **SHOULD** appear without manual page refresh. |
-| `STR-602` | The system **MAY** use push notification (websocket-equivalent), short-polling, or hybrid mechanisms; the choice is implementation-level provided the perceived latency requirement is met. |
+| `STR-601` | Journal entries from external sources are fetched on-demand when the user loads or refreshes the journal view. The platform **MUST NOT** auto-refresh by default. |
+| `STR-602` | The user **MUST** be able to trigger a manual refresh of the journal view (refresh button or page reload) to fetch current data from sources. |
 | `STR-603` | New journal entries **MUST** be ordered correctly relative to existing entries on arrival; the system **MUST NOT** show entries out of chronological order. |
+| `STR-604` | The platform **MUST** offer an opt-in auto-refresh toggle with a user-selectable interval (e.g., 30s, 60s, 120s). Auto-refresh **MUST** be disabled by default. When enabled, the UI **MUST** display a notice indicating that periodic API calls are being made to upstream sources. |
 
 ### 14.2.4 Provisioning progress
 

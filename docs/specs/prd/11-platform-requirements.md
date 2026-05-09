@@ -117,16 +117,18 @@ This section covers the cross-integration aspects of remote execution. Per-integ
 
 The journal is the per-node history of significant events. The global timeline is its cross-node companion.
 
+> **Architectural principle: source tools remain the source of truth.** The journal does NOT duplicate data from external tools into a local database. Events from PuppetDB, monitoring tools, cloud APIs, etc. are fetched on-demand from the source when the user views the journal. Only data that Vigil originates (executions, manual notes) is persisted locally. This avoids data duplication, keeps the source tool authoritative, and eliminates the need for ingestion pipelines, pollers, and retention management for external data.
+
 ### 11.3.1 Per-node journal
 
 | ID | Requirement |
 |----|-------------|
-| `JRN-001` | The platform **MUST** maintain a per-node journal aggregating events from all enabled, journal-contributing integrations. |
+| `JRN-001` | The platform **MUST** present a per-node journal aggregating events from all enabled, journal-contributing integrations. Events from external sources are fetched on-demand; only Vigil-originated entries (executions, manual notes) are persisted locally. |
 | `JRN-002` | Journal entries **MUST** carry: timestamp, source integration, event type, summary, optional structured details, and (where applicable) a back-reference to the originating artifact (report, execution transcript, provisioning task). |
-| `JRN-003` | Journal entries **MUST** be filterable by: type, source, time range, severity. |
+| `JRN-003` | Journal entries **MUST** be filterable by: type, source, time range, severity. Time range and source filters are passed to upstream APIs to scope the query. |
 | `JRN-004` | Journal entries **MUST** be sortable by time (default: newest first). |
 | `JRN-005` | The journal **MUST** preserve grouping where the source defines it (e.g., events from a single Puppet report grouped under that report). |
-| `JRN-006` | The journal **MUST** support pagination. Per-node journals may exceed thousands of entries over time. |
+| `JRN-006` | The journal **MUST** support pagination via "load more" (cursor-based per source). |
 
 ### 11.3.2 Global timeline
 
@@ -134,16 +136,19 @@ The journal is the per-node history of significant events. The global timeline i
 |----|-------------|
 | `JRN-101` | The platform **MUST** provide a global timeline view of journal entries across all nodes. |
 | `JRN-102` | The global timeline **MUST** be filterable by: node, group, type, source, time range, severity. |
-| `JRN-103` | The global timeline **MUST** support text search across entry summaries and structured detail content. |
+| `JRN-103` | Full-text search is limited to entries currently loaded in the browser. The platform **MUST** support client-side text filtering of rendered entries. Cross-source server-side full-text search is explicitly out of scope — operators use source-native tools for deep historical text search. |
 
-### 11.3.3 Sources and contribution rules
+### 11.3.3 Data sourcing model
 
 | ID | Requirement |
 |----|-------------|
 | `JRN-201` | The platform **MUST** apply the journal contribution rules in [section 4.10](04-integration-types.md#410-journal-behavior-summary) without exception. |
-| `JRN-202` | The platform **MUST** distinguish *stored* journal entries (events that have been persisted) from *live-fetched* entries (events read on-demand from the source). The user **MUST NOT** see two copies of the same event from these two sources. |
-| `JRN-203` | The platform **MUST** support both polling and webhook-based discovery of new events from sources, depending on integration capability. |
-| `JRN-204` | The platform **MUST** preserve the originating source's event ID where one exists, for idempotent re-ingest and back-reference. |
+| `JRN-202` | External events (from integrations) are fetched on-demand from the source tool's API when the user views the journal. The platform **MUST NOT** store copies of external events in a local database. The source tool is the single source of truth. |
+| `JRN-203` | Vigil-originated data (execution results, manual notes) **MUST** be persisted locally in PostgreSQL, as Vigil is the authoritative source for this data. |
+| `JRN-204` | The platform **MUST** preserve the originating source's event ID where one exists, for back-reference and deduplication within a single fetch. |
+| `JRN-205` | The journal view **MUST NOT** auto-refresh by default. Fresh data is fetched only on explicit user action (page load, navigation, or manual refresh button). |
+| `JRN-206` | The platform **MUST** offer an opt-in auto-refresh toggle with selectable interval (default off). When enabled, the UI **MUST** display a notice that periodic upstream API calls are being made. |
+| `JRN-207` | The platform **MUST** render the journal progressively — locally-stored entries appear immediately; external source results appear as each API responds. The UI **MUST** indicate which sources are still loading and which have failed. |
 
 ### 11.3.4 Manual notes
 
@@ -308,7 +313,7 @@ The journal is the per-node history of significant events. The global timeline i
 | `PERF-004` | The platform **MUST** apply **request deduplication / coalescing** — multiple concurrent requests for the same data **MUST** result in one upstream call. |
 | `PERF-005` | Pagination **MUST** be applied to every list endpoint with cursor-based pagination preferred for cross-source aggregation. |
 | `PERF-006` | The platform **MUST** apply per-source timeouts for aggregation operations — fast sources return immediately rather than blocking on slow ones. |
-| `PERF-007` | The platform **MUST** support 50 concurrent active users without queuing read requests. |
+| `PERF-007` | The platform **MUST** support 5 concurrent active users without queuing read requests. |
 | `PERF-008` | The platform **MUST** support 100 concurrent streaming executions without dropping output. |
 | `PERF-009` | The platform **MUST** apply **incremental updates** where upstream APIs support them — pull only what changed since the last refresh. |
 

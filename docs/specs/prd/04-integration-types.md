@@ -93,7 +93,7 @@ Events are discrete state transitions — a resource changed, a check transition
 | `TYPE-EVT-003` | An Events-capable plugin **MUST** group events by their originating run or report when the underlying source defines such grouping (e.g., a single Puppet run that changes three resources produces three events grouped under one report). |
 | `TYPE-EVT-004` | An Events-capable plugin **MUST NOT** surface no-op or unchanged events. The journal contains only state transitions. |
 | `TYPE-EVT-005` | An Events-capable plugin **MUST** support time-range and per-node filtering at the source where the underlying tool allows. |
-| `TYPE-EVT-006` | An Events-capable plugin **SHOULD** support push notification (webhook, message bus) when the underlying tool offers it; otherwise it **MUST** support polled discovery of new events. |
+| `TYPE-EVT-006` | An Events-capable plugin **MUST** support time-range-bounded queries so the platform can fetch events on demand for a given time window. Push notification (webhook) is **NOT** required for journal population — events are fetched when the user views the journal. Webhooks **MAY** be used for other purposes (triggering executions, cache invalidation) but are not part of the journal data flow. |
 
 **Journal behavior:** Each event becomes one journal entry, attributed to its source integration, grouped under its originating run/report where applicable.
 

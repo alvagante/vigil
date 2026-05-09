@@ -52,6 +52,43 @@ Three deployment shapes supported:
 2. **systemd on bare metal / VM.** Release tarball unpacked to `/opt/vigil`; systemd unit starts the release. Configuration via `/etc/vigil/vigil.env`.
 3. **Development.** `mix phx.server` directly; sqlite or local postgres.
 
+### 12.1.3 Dev-time MCP tooling (Tidewave)
+
+In development, the application exposes a runtime MCP endpoint via [Tidewave](https://hexdocs.pm/tidewave/). This gives coding agents direct access to the running application context — evaluating code, querying the database through Ecto, reading logs, inspecting schemas, and looking up module documentation by name.
+
+**Setup:**
+
+Add to `apps/vigil_web/mix.exs` (dev-only):
+
+```elixir
+{:tidewave, "~> 0.1", only: :dev}
+```
+
+Tidewave auto-mounts at `/tidewave/mcp` on the Phoenix endpoint. The MCP client connects as an HTTP-type server:
+
+```json
+{
+  "tidewave": {
+    "type": "http",
+    "url": "http://localhost:4000/tidewave/mcp"
+  }
+}
+```
+
+**Available tools:**
+
+| Tool | Purpose |
+|------|---------|
+| `project_eval` | Evaluate Elixir expressions in the running app context |
+| `get_docs` | Fetch documentation for any module/function by name |
+| `get_source_location` | Find where a module/function is defined |
+| `get_logs` | Read application logs from the running system |
+| `get_schemas` | Inspect Ecto schemas from the runtime |
+| `execute_sql_query` | Run SQL through the app's Ecto repo connection |
+
+> **Decision: Tidewave is dev-only, never in production.**
+> It provides unrestricted eval and SQL access — invaluable for development velocity but a security liability in any other environment. The `only: :dev` constraint ensures it is not compiled into releases.
+
 ## 12.2 Runtime configuration
 
 Configuration is loaded at release boot by `config/runtime.exs`:
@@ -88,7 +125,6 @@ config :vigil, Oban,
   repo: Vigil.Repo,
   queues: [
     default: 10,
-    journal: 20,
     webhooks: 10,
     maintenance: 3,
     ai: 5
@@ -136,7 +172,7 @@ bin/vigil eval "Vigil.Release.migrate"
 
 ### 12.3.2 Connection pool
 
-`Ecto.Repo` uses `DBConnection` pooling. Size defaults to `2 * concurrent_users + background_jobs`. At the target (50 users, moderate background), a 20-connection pool is comfortable. The pool is configurable per `DB_POOL_SIZE`.
+`Ecto.Repo` uses `DBConnection` pooling. Size defaults to `2 * concurrent_users + background_jobs`. At the target (5 users, moderate background), a 10-connection pool is comfortable. The pool is configurable per `DB_POOL_SIZE`.
 
 ### 12.3.3 Required extensions
 
@@ -298,7 +334,7 @@ A failing integration typically shows in the admin dashboard with a diagnostic. 
 
 Routine maintenance jobs run as Oban cron jobs:
 
-- Retention expiration (journal, executions, audit per respective policies).
+- Retention expiration (executions, audit per respective policies).
 - `VACUUM ANALYZE` nudging for high-churn tables (Oban jobs, audit).
 - Stale session cleanup.
 
@@ -323,7 +359,7 @@ Per `NFR-1601`, we document expected resource usage. Ballpark figures for a 10,0
 - Memory: 1.5–2 GB BEAM heap; ETS caches another 500 MB–1 GB.
 - CPU: 2–4 cores typical; spikes to 8 during catalog compilations or large executions.
 - Network: proportional to upstream call volume; negligible for the platform itself.
-- Disk: depends on journal retention — at 30 days journal, ~5–10 GB of DB for a busy deployment.
+- Disk: depends on execution transcript retention — at 30 days, modest for a typical deployment.
 
 These numbers are targets for release validation — regressions beyond 50% trigger review.
 

@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Review & Commit",
+  "description": "Checks staged changes, runs lint/format/fast tests, reviews for security vulnerabilities, logic errors, and structural issues (no spaghetti code or tech debt shortcuts). Discusses any concerns with the user before fixing. Then commits with a well-crafted message and description.",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Perform a full pre-commit review and commit workflow:\n\n1. **Check staged changes:** Run `git diff --cached --stat` and `git diff --cached` to see what's staged.\n\n2. **Run quality gates:** Execute the following checks on the staged files:\n   - `mix format --check-formatted` (formatting)\n   - `mix compile --warnings-as-errors` (compilation)\n   - `mix credo --strict` (linting/style)\n   - `mix test` (fast unit tests only — skip integration/perf/e2e)\n   If any fail, report the failures and suggest fixes. Apply fixes only after user agreement.\n\n3. **Code review for issues:** Analyze the staged diff for:\n   - **Security:** hardcoded secrets, injection risks, missing input validation, unsafe deserialization, improper auth checks\n   - **Logic errors:** race conditions, unhandled edge cases, incorrect control flow, off-by-one errors\n   - **Structural quality:** spaghetti code, tight coupling, violation of project architecture (check docs/specs/design/), quick-fix hacks that introduce tech debt, missing telemetry or RBAC enforcement where required\n   - **Spec alignment:** verify changes align with docs/specs/ — flag any drift\n\n4. **Discuss with user:** If any issues are found in steps 2 or 3, present them clearly with suggested fixes. Wait for user input before applying changes. If the user agrees to fixes, apply them and re-stage.\n\n5. **Commit:** Once all checks pass and the user is satisfied:\n   - Craft a conventional commit message (type(scope): subject) with a concise subject line (<72 chars)\n   - Write a commit body describing *what* changed and *why*, referencing requirement IDs (e.g., INV-001) where applicable\n   - Run `git commit` with the crafted message\n\nDo NOT skip any step. If there are no staged changes, inform the user and stop."
+  }
+}

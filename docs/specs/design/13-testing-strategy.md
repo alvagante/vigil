@@ -26,8 +26,8 @@ apps/vigil_core/test/
 │   ├── linker_property_test.exs
 │   └── linker_perf_test.exs            # tagged :perf, run nightly
 ├── journal/
-│   ├── ingestor_test.exs
-│   └── extraction_property_test.exs
+│   ├── notes_test.exs
+│   └── execution_entries_test.exs
 ├── rbac/
 │   ├── evaluator_test.exs
 │   └── evaluator_property_test.exs
@@ -195,32 +195,34 @@ property "target scope filter is correctly applied" do
 end
 ```
 
-**Journal event extraction (`TEST-203`):**
+**Journal event normalization (`TEST-203`):**
 
 ```elixir
-property "no-op events never produce journal entries" do
+property "no-op events never produce normalized entries" do
   check all report <- puppet_report_generator(only_noop: true) do
-    entries = EventExtractor.extract(report)
+    entries = EventNormalizer.normalize_events(report.resource_statuses, integration)
     assert entries == []
   end
 end
 
 property "events from one report share group_key" do
   check all report <- puppet_report_generator(min_changes: 2) do
-    entries = EventExtractor.extract(report)
+    entries = EventNormalizer.normalize_events(report.resource_statuses, integration)
     group_keys = entries |> Enum.map(& &1.group_key) |> Enum.uniq()
     assert length(group_keys) == 1
     assert hd(group_keys) == report.id
   end
 end
 
-property "re-ingest of same report creates no duplicates" do
+property "normalized events always have required fields" do
   check all report <- puppet_report_generator() do
-    Journal.ingest(report)
-    count_first = Journal.count_for(report.node)
-    Journal.ingest(report)
-    count_second = Journal.count_for(report.node)
-    assert count_first == count_second
+    entries = EventNormalizer.normalize_events(report.resource_statuses, integration)
+    for entry <- entries do
+      assert entry.source_event_id != nil
+      assert entry.occurred_at != nil
+      assert entry.summary != nil
+      assert entry.severity in [:informational, :notice, :warning, :error]
+    end
   end
 end
 ```

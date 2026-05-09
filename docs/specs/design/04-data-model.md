@@ -164,51 +164,37 @@ AES-256-GCM. Key loaded from `VIGIL_SECRETS_KEY` at boot. Key rotation requires 
 
 ## 4.4 Journal schemas
 
-The journal is the most write-heavy and the most queried non-derived data in the system. It's designed for growth.
+The journal table stores only Vigil-originated data: execution results and manual notes. External events (from PuppetDB, monitoring tools, cloud APIs, etc.) are fetched on-demand from the source tool and never stored locally. See [section 7](07-journal-and-events.md) for the full journal architecture.
 
 ```sql
 CREATE TABLE journal_entries (
-  id               UUID PRIMARY KEY,
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id        UUID NOT NULL,
   node_id          UUID REFERENCES nodes(id) ON DELETE SET NULL,
   occurred_at      TIMESTAMPTZ NOT NULL,
   recorded_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  integration_id   UUID REFERENCES integrations(id) ON DELETE SET NULL,
-  plugin_id        TEXT,
-  entry_type       TEXT NOT NULL,     -- 'event', 'execution', 'provisioning',
-                                      -- 'deployment', 'monitoring_transition',
-                                      -- 'configuration_change', 'manual_note'
-  severity         TEXT NOT NULL DEFAULT 'info',  -- 'info' | 'notice' | 'warning' | 'error'
+  entry_type       TEXT NOT NULL,     -- 'execution' | 'manual_note'
+  severity         TEXT NOT NULL DEFAULT 'informational',
   summary          TEXT NOT NULL,
   detail           JSONB NOT NULL DEFAULT '{}'::jsonb,
-  group_key        TEXT,              -- per-source grouping (Puppet report ID)
-  source_event_id  TEXT,              -- upstream ID for idempotency
-  search_text      TSVECTOR GENERATED ALWAYS AS (
-                     to_tsvector('english', summary || ' ' || coalesce(detail::text, ''))
-                   ) STORED,
-  references       JSONB NOT NULL DEFAULT '{}'::jsonb,  -- {report_id, execution_id, ...}
-  author_user_id   UUID REFERENCES users(id) ON DELETE SET NULL, -- manual notes only
-  deleted_at       TIMESTAMPTZ
+  -- Execution-specific
+  execution_id     UUID REFERENCES executions(id) ON DELETE SET NULL,
+  -- Manual note-specific
+  author_user_id   UUID REFERENCES users(id) ON DELETE SET NULL,
+  -- Metadata
+  deleted_at       TIMESTAMPTZ       -- soft-delete for manual notes only
 );
 CREATE INDEX journal_node_time_idx ON journal_entries (node_id, occurred_at DESC);
 CREATE INDEX journal_tenant_time_idx ON journal_entries (tenant_id, occurred_at DESC);
-CREATE INDEX journal_group_key_idx ON journal_entries (group_key) WHERE group_key IS NOT NULL;
-CREATE INDEX journal_search_gin ON journal_entries USING GIN (search_text);
-CREATE INDEX journal_detail_gin ON journal_entries USING GIN (detail);
-CREATE UNIQUE INDEX journal_dedupe_idx
-  ON journal_entries (integration_id, source_event_id)
-  WHERE source_event_id IS NOT NULL;
+CREATE INDEX journal_entry_type_idx ON journal_entries (entry_type);
 ```
 
 Notes on this design:
 
-- **Idempotent re-ingest** via the unique `(integration_id, source_event_id)` index (`JRN-204`). When a plugin re-fetches events, duplicates are silently skipped.
-- **Group key** preserves source grouping (`JRN-005`, `DM-503`) — all events from one Puppet report share the report's ID.
-- **Full-text search** over summary + detail via a stored tsvector (`UI-403`, `JRN-103`).
-- **Severity** supports the filter requirement.
-- **Soft-delete** only for manual notes the author removes (`DM-501`); system entries never delete until retention.
-
-Partitioning by month is planned if entry volume warrants it; the schema is partition-ready via `occurred_at` as the partition key.
+- **Minimal schema** — only stores what Vigil originates. No dedup index needed (no external ingestion).
+- **Severity** supports filtering when merging with externally-fetched entries in the LiveView.
+- **Soft-delete** only for manual notes the author removes (`DM-501`).
+- **No full-text search index** — text search is handled client-side in the browser across all rendered entries (local + fetched).
 
 ### 4.4.1 Manual note edit history
 

@@ -2,273 +2,330 @@
 
 This section realizes PRD sections 4.10 (journal contribution rules), 11.3 (per-node journal, global timeline, manual notes, linking), and `TYPE-JRN-*`, `JRN-*`, `DM-501..503`.
 
-The journal is the per-node operational history. It's how an operator answers "what changed?". It must be accurate (reflects what the source actually reported), complete (no dropped events), idempotent (re-ingestion doesn't duplicate), grouped correctly (events from one run stay together), and fast to query.
+The journal is the per-node operational history. It's how an operator answers "what changed?". It must be accurate (reflects what the source actually reported), complete (shows all contributing sources), grouped correctly (events from one run stay together), and responsive to render.
 
-## 7.1 Pipeline overview
+> **Decision: Fetch-on-demand, not store-and-forward.**
+> External events (Puppet reports, monitoring transitions, cloud lifecycle, deployments) are fetched from the source tool's API when the user views the journal. Vigil does NOT maintain a local copy of external events. Only Vigil-originated data (execution results, manual notes) is persisted in PostgreSQL. This keeps the source tool as the single source of truth, avoids data duplication, eliminates ingestion pipelines, and removes retention policy conflicts between Vigil and upstream tools.
+
+## 7.1 Architecture overview
 
 ```
-+-------------------+           +-----------------------+           +------------------+
-|   Plugins / Event |--events-->| Vigil.Core.Journal    |--insert-->| journal_entries  |
-|     Pollers       |           |     Ingestor (Oban)   |           | (PostgreSQL)     |
-+-------------------+           +-----------+-----------+           +--------+---------+
-     ^                                      |                                |
-     |                                      | publish                        | triggers
-     |                                      v                                v
-     |                           +---------------------+         +----------------------+
-     |                           |  Phoenix.PubSub     |         |  Full-text search    |
-     |                           |  journal:global,    |         |  tsvector GIN        |
-     |                           |  node:<id>          |         +----------------------+
-     |                           +----------+----------+
-     |                                      |
-     |                                      v
-     |                           +---------------------+
-     |                           |  LiveView subscribers|
-     |                           +---------------------+
-     |
-     +--webhook--+
-                 |
-     +-----------v-----------+
-     |   Phoenix webhook     |
-     |   controller          |
-     |   (enqueues Oban job) |
-     +-----------------------+
+User opens journal
+        │
+        ▼
+┌─────────────────────────────────────────────────────────┐
+│  LiveView mount                                          │
+│                                                          │
+│  1. Query local Postgres (executions + manual notes)     │  ← immediate (~5ms)
+│  2. Kick off async fetches to each integration           │
+│                                                          │
+│     ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
+│     │ PuppetDB API │  │ Monitoring   │  │ CloudTrail │ │
+│     │ (events)     │  │ API          │  │ API        │ │
+│     └──────┬───────┘  └──────┬───────┘  └─────┬──────┘ │
+│            │                  │                 │        │
+│  3. As each responds → merge into timeline, re-render   │
+│                                                          │
+│  4. All done → remove loading indicators                 │
+└─────────────────────────────────────────────────────────┘
 ```
 
-## 7.2 Ingestion sources
+## 7.2 What is stored locally (PostgreSQL)
 
-Journal entries arrive through three channels:
+Only data where Vigil is the originating source:
 
-### 7.2.1 Event polling
+| Data | Why stored locally |
+|------|-------------------|
+| **Execution results** | Vigil initiates and owns the execution; no external tool has this data |
+| **Manual notes** | User-authored content; Vigil is the only source |
+| **Audit trail** | Platform-internal accountability record |
+| **Linking decisions** | Manual link/unlink overrides |
 
-Plugins that expose events via query (PuppetDB events, AWS CloudTrail, Azure Activity Log, Proxmox task log) have a poller worker started by the plugin supervisor:
+These use the `journal_entries` table (for executions and notes) and `audit_entries` (for audit).
+
+```sql
+CREATE TABLE journal_entries (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id       UUID NOT NULL,
+  node_id         UUID NOT NULL REFERENCES nodes(id),
+  entry_type      TEXT NOT NULL,          -- 'execution' | 'manual_note'
+  summary         TEXT NOT NULL,
+  detail          JSONB,
+  severity        TEXT NOT NULL DEFAULT 'informational',
+  occurred_at     TIMESTAMPTZ NOT NULL,
+  -- Execution-specific
+  execution_id    UUID REFERENCES executions(id),
+  -- Manual note-specific
+  author_user_id  UUID REFERENCES users(id),
+  -- Metadata
+  inserted_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at      TIMESTAMPTZ
+);
+
+CREATE INDEX journal_entries_node_time ON journal_entries (node_id, occurred_at DESC);
+CREATE INDEX journal_entries_type ON journal_entries (entry_type);
+```
+
+## 7.3 What is fetched on-demand (never stored)
+
+All external event data — fetched from the source tool's API when the user views the journal:
+
+| Source | API call | Filters passed |
+|--------|----------|----------------|
+| PuppetDB events | `GET /pdb/query/v4/events` with time range + certname | Time range, node certname |
+| Monitoring transitions | Tool-specific API (Icinga, Nagios, etc.) | Time range, host |
+| AWS CloudTrail | `LookupEvents` with time range + resource | Time range, instance ID |
+| Azure Activity Log | Activity Log API with time range + resource | Time range, resource ID |
+| Proxmox task log | `GET /api2/json/nodes/{node}/tasks` | Time range |
+| Deployment events | Tool-specific (ArgoCD, etc.) | Time range, target |
+
+Each plugin's Events capability implements a `fetch_events/3` function:
 
 ```elixir
-defmodule Vigil.Integrations.Puppet.EventPoller do
-  use GenServer
-  # Periodically fetches events since the last checkpoint.
-  # Publishes normalized journal entries.
-end
+@callback fetch_events(config :: map(), node_id :: String.t(), opts :: keyword()) ::
+  {:ok, [normalized_event()]} | {:error, term()}
+
+@type normalized_event :: %{
+  source_event_id: String.t(),
+  occurred_at: DateTime.t(),
+  entry_type: String.t(),
+  summary: String.t(),
+  severity: :informational | :notice | :warning | :error,
+  detail: map(),
+  group_key: String.t() | nil,
+  references: map()
+}
 ```
 
-Each poller tracks a checkpoint (last processed event ID or timestamp) so it fetches only new events (`TYPE-EVT-006`, `PUP-607`). Checkpoints are persisted to avoid re-ingesting on restart.
+## 7.4 Event normalization
 
-### 7.2.2 Push (webhook / streaming)
+Each plugin normalizes its source's event format to the common `normalized_event` shape. This happens at fetch time, not at ingestion time (there is no ingestion).
 
-For sources that push (Puppet webhooks on report arrival, ArgoCD webhook, monitoring webhooks):
+### 7.4.1 Puppet event extraction
 
 ```elixir
-# apps/vigil_web/lib/vigil_web/controllers/webhook_controller.ex
-def handle(conn, %{"integration_id" => id} = params) do
-  with {:ok, integration} <- Vigil.Core.Inventory.get_integration(id),
-       :ok <- verify_signature(integration, conn, params) do
-    Oban.insert!(WebhookJob.new(%{integration_id: id, payload: params}))
-    send_resp(conn, 202, "")
+defmodule Vigil.Integrations.Puppet.EventNormalizer do
+  def normalize_events(raw_events, integration) do
+    raw_events
+    |> Enum.filter(&changed?/1)           # skip noop (TYPE-EVT-004)
+    |> Enum.map(&to_normalized(&1, integration))
+  end
+
+  defp changed?(event), do: event["status"] in ["success", "failure"]
+
+  defp to_normalized(event, integration) do
+    %{
+      source_event_id: event["report"] <> ":" <> event["resource_title"],
+      occurred_at: parse_timestamp(event["timestamp"]),
+      entry_type: "configuration_change",
+      summary: "#{event["resource_type"]}[#{event["resource_title"]}]: #{event["message"]}",
+      severity: if(event["status"] == "failure", do: :error, else: :informational),
+      detail: %{
+        resource_type: event["resource_type"],
+        resource_title: event["resource_title"],
+        old_value: event["old_value"],
+        new_value: event["new_value"],
+        file: event["file"],
+        line: event["line"],
+        containment_path: event["containment_path"]
+      },
+      group_key: event["report"],
+      references: %{report_id: event["report"]}
+    }
   end
 end
 ```
 
-The webhook controller accepts, verifies signature (HMAC typically), enqueues an Oban job, and returns 202. The Oban job runs the plugin's webhook handler, which normalizes to journal entries.
+### 7.4.2 Monitoring state transition detection
 
-### 7.2.3 Internal producers
-
-Executions (one entry per target) and manual notes (user-authored) produce entries directly via the journal context:
+For monitoring, the plugin fetches current and recent state from the monitoring tool's API. State transitions are derived by comparing consecutive check results:
 
 ```elixir
-Vigil.Core.Journal.create_manual_note(principal, node_id, %{
-  summary: "Rebooted after incident I-2026-05-06-03",
-  detail: %{tags: ["incident-2026-05-06-03"]}
-})
-```
-
-## 7.3 Event extraction
-
-The most delicate ingestion is event extraction from structured reports (`TYPE-EVT-004`, `TYPE-RPT-005`). A Puppet report produces multiple events, and the rules about what to extract are stringent:
-
-- Only state transitions (`TYPE-EVT-004`): a resource `file[/etc/foo]` that changed is an event; one that was `noop` is not.
-- Grouped under the source's group key (`TYPE-JRN-003`, `JRN-005`): all events from report `abc` share `group_key = "abc"`.
-- Idempotent on re-ingest (`JRN-204`): replaying the same report doesn't create duplicates.
-
-```elixir
-defmodule Vigil.Integrations.Puppet.EventExtractor do
-  def extract(report) do
-    report.resource_statuses
-    |> Enum.filter(&changed?/1)           # skip noop
-    |> Enum.flat_map(&events_for_resource/1)
-    |> Enum.map(&to_journal_entry(&1, report))
+defmodule Vigil.Integrations.Icinga.EventNormalizer do
+  def normalize_transitions(state_history, integration) do
+    state_history
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.filter(fn [prev, curr] -> prev["state"] != curr["state"] end)
+    |> Enum.map(fn [prev, curr] -> to_transition(prev, curr, integration) end)
   end
 
-  defp changed?(resource), do: resource.status in ["success", "failure"] and
-                                resource.events != [] and
-                                not all_noop?(resource.events)
-end
-```
-
-The ingestor wraps insertion in a `ON CONFLICT DO NOTHING` on the unique idempotency index `(integration_id, source_event_id)`. Duplicates are silently skipped.
-
-## 7.4 Journal ingestor
-
-```elixir
-defmodule Vigil.Core.Journal.Ingestor do
-  use Oban.Worker, queue: :journal, max_attempts: 5
-
-  @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"integration_id" => id, "entries" => entries}}) do
-    Ecto.Multi.new()
-    |> Multi.insert_all(
-      :entries,
-      JournalEntry,
-      Enum.map(entries, &normalize/1),
-      on_conflict: :nothing,
-      conflict_target: [:integration_id, :source_event_id]
-    )
-    |> Repo.transaction()
-    |> publish_events()
-  end
-
-  defp publish_events({:ok, %{entries: {_count, inserted}}}) do
-    for entry <- inserted do
-      Phoenix.PubSub.broadcast(Vigil.PubSub, "journal:global", {:journal_entry, entry})
-      if entry.node_id do
-        Phoenix.PubSub.broadcast(Vigil.PubSub, "node:#{entry.node_id}", {:journal_entry, entry})
-      end
-    end
-    :ok
+  defp to_transition(prev, curr, _integration) do
+    %{
+      source_event_id: "#{curr["host"]}:#{curr["service"]}:#{curr["timestamp"]}",
+      occurred_at: parse_timestamp(curr["timestamp"]),
+      entry_type: "monitoring_transition",
+      summary: "#{curr["service"]}: #{prev["state"]} → #{curr["state"]}",
+      severity: severity_for(curr["state"]),
+      detail: %{
+        check: curr["service"],
+        previous_state: prev["state"],
+        new_state: curr["state"],
+        output: curr["output"]
+      },
+      group_key: nil,
+      references: %{}
+    }
   end
 end
 ```
 
-`insert_all` with `on_conflict: :nothing` is atomic and idempotent. Only actually-inserted rows are broadcast, so live-update subscribers never see dupes.
+### 7.4.3 Severity mapping
+
+Each plugin maps its source's severity/status concept to Vigil's four levels:
+
+| Level | Meaning | Examples |
+|-------|---------|----------|
+| `:informational` | Normal operation, successful change | Puppet resource applied, VM started, deployment succeeded |
+| `:notice` | Noteworthy but not problematic | Monitoring recovery, noop change (if shown) |
+| `:warning` | Potential issue, not yet critical | Monitoring warning state, resource corrective change |
+| `:error` | Failure requiring attention | Puppet resource failed, monitoring critical, provisioning failed |
 
 ## 7.5 Journal contribution rules
 
-The PRD is strict about which types produce journal entries (`4.10`):
+Per PRD section 4.10, strictly enforced at the plugin level:
 
-| Type | Entry creation | Implementation |
-|------|---------------|----------------|
-| Inventory | None | Ingestor doesn't accept `:inventory` entries |
-| Facts | None | Ingestor doesn't accept `:facts` entries |
-| Configuration | None | Ingestor doesn't accept `:configuration` entries |
-| Events | One per event | Plugin pollers/webhooks produce one entry per real event |
-| Monitoring | One per state *change* | Monitoring workers diff state against last seen; entry only on transition |
-| Reports | One per change event; none for no-op | Extractor filters noop; enforced in `changed?/1` predicate |
-| Remote Execution | One per target per execution | Execution.Stream writes on completion |
-| Provisioning | One per lifecycle action (from upstream event log) | EventLogPoller, not local inference |
-| Deployment | One per deploy event | Plugin-specific poller/webhook |
+| Type | Journal contribution | Fetch behavior |
+|------|---------------------|----------------|
+| Inventory | None | Not fetched for journal |
+| Facts | None | Not fetched for journal |
+| Configuration | None | Not fetched for journal |
+| Events | One entry per event | Fetched on-demand from source API |
+| Monitoring | One entry per state *change* | Transitions derived from source's state history API |
+| Reports | One entry per change event; none for no-op | Events extracted from report data fetched on-demand |
+| Remote Execution | One per target per execution | Stored locally (Vigil-originated) |
+| Provisioning | One per lifecycle action | Fetched on-demand from source's event/task log |
+| Deployment | One per deploy event | Fetched on-demand from source API |
 
-The shape is enforced by the ingestor's typespec — it rejects journal entries whose `plugin_id + entry_type` combination isn't in the allowed matrix.
+## 7.6 LiveView implementation
 
-## 7.6 Monitoring state transition detection
-
-For monitoring (`FLOW-601`, `TYPE-MON-003`), we need to detect transitions without storing the raw stream. The approach:
-
-- A `MonitoringStateTracker` GenServer per integration holds last-known state per `{node_id, check}` in memory (and a backing table on disk for restart).
-- On each observation, compare against last-known; if different, emit a journal entry for the transition.
-- Steady-state observations do not produce entries (`FLOW-602`, `TYPE-MON-003`).
+### 7.6.1 Per-node journal
 
 ```elixir
-defmodule Vigil.Integrations.Icinga.StateTracker do
-  use GenServer
+defmodule VigilWeb.NodeJournalLive do
+  use VigilWeb, :live_view
 
-  def handle_cast({:observation, %{node_id: nid, check: c, state: new_state, ts: ts}}, state) do
-    key = {nid, c}
-    old_state = Map.get(state.last_known, key)
+  def mount(%{"node_id" => node_id}, _session, socket) do
+    node = Vigil.Core.Inventory.get_node!(node_id)
+    filters = default_filters()
 
-    if old_state && old_state != new_state do
-      duration_ms = DateTime.diff(ts, old_state.since, :millisecond)
-      Ingestor.enqueue(build_transition_entry(nid, c, old_state, new_state, duration_ms))
+    # Immediate: local entries from Postgres
+    local_entries = Vigil.Core.Journal.local_entries(node_id, filters)
+    integrations = journal_capable_integrations(node)
+
+    socket =
+      socket
+      |> assign(:node, node)
+      |> assign(:filters, filters)
+      |> assign(:pending_sources, MapSet.new(Enum.map(integrations, & &1.id)))
+      |> assign(:failed_sources, %{})
+      |> stream(:entries, local_entries)
+
+    # Async: fetch from each integration
+    if connected?(socket) do
+      for int <- integrations do
+        send(self(), {:fetch_events, int})
+      end
     end
 
-    new_last = Map.put(state.last_known, key, %{state: new_state, since: ts})
-    {:noreply, %{state | last_known: new_last}}
-  end
-end
-```
-
-Durations of prior-state are captured in the transition entry (`FLOW-603`).
-
-## 7.7 Global timeline and per-node timeline
-
-Per-node timeline:
-
-```elixir
-def node_timeline(principal, node_id, filters) do
-  from(e in JournalEntry,
-    where: e.node_id == ^node_id and is_nil(e.deleted_at),
-    where: ^visibility_filter(principal),
-    where: ^type_filter(filters),
-    where: ^time_range(filters),
-    order_by: [desc: e.occurred_at, desc: e.id],
-    preload: [:integration]
-  )
-  |> cursor_paginate(filters.cursor, limit: 50)
-end
-```
-
-Global timeline:
-
-```elixir
-def global_timeline(principal, filters) do
-  from(e in JournalEntry,
-    where: is_nil(e.deleted_at),
-    where: ^visibility_filter(principal),
-    where: ^type_filter(filters),
-    where: ^time_range(filters),
-    where: ^search_filter(filters),    # uses tsvector + @@ plainto_tsquery
-    order_by: [desc: e.occurred_at, desc: e.id]
-  )
-  |> cursor_paginate(filters.cursor, limit: 50)
-end
-```
-
-Cursor pagination uses `(occurred_at, id)` as the composite cursor. This avoids offset-based inconsistency under concurrent inserts (`INV-405`, mirrored for journal).
-
-Full-text search uses the generated tsvector column and the `@@ plainto_tsquery(...)` operator. At the journal's expected volume, the GIN index on `search_text` keeps queries under 200ms.
-
-### 7.7.1 Visibility filter
-
-RBAC scoping for journal:
-
-```elixir
-defp visibility_filter(%Principal{} = principal) do
-  allowed_integrations = RBAC.allowed_integration_ids(principal, "journal:read")
-  allowed_node_ids_subq = node_visibility_subquery(principal)
-
-  dynamic([e],
-    e.integration_id in ^allowed_integrations or
-    (e.entry_type == "manual_note" and e.node_id in subquery(allowed_node_ids_subq))
-  )
-end
-```
-
-A user can see journal entries for integrations they have read on, plus manual notes on nodes they can see.
-
-## 7.8 Live updates to LiveView
-
-Per-node journal LiveView:
-
-```elixir
-def mount(%{"node_id" => id}, _session, socket) do
-  if connected?(socket) do
-    Phoenix.PubSub.subscribe(Vigil.PubSub, "node:#{id}")
+    {:ok, socket}
   end
 
-  {:ok, socket
-    |> assign(:node, load_node(id))
-    |> stream(:entries, load_initial_entries(id))}
-end
+  def handle_info({:fetch_events, integration}, socket) do
+    node = socket.assigns.node
+    filters = socket.assigns.filters
 
-def handle_info({:journal_entry, entry}, socket) do
-  if matches_filter?(entry, socket.assigns.filters) do
-    {:noreply, stream_insert(socket, :entries, entry, at: 0)}
-  else
+    Task.Supervisor.start_child(Vigil.TaskSupervisor, fn ->
+      result = fetch_integration_events(integration, node, filters)
+      send(socket.root_pid, {:events_arrived, integration.id, result})
+    end)
+
     {:noreply, socket}
   end
+
+  def handle_info({:events_arrived, integration_id, {:ok, entries}}, socket) do
+    socket =
+      socket
+      |> stream_batch_insert_sorted(:entries, entries)
+      |> update(:pending_sources, &MapSet.delete(&1, integration_id))
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:events_arrived, integration_id, {:error, reason}}, socket) do
+    socket =
+      socket
+      |> update(:pending_sources, &MapSet.delete(&1, integration_id))
+      |> update(:failed_sources, &Map.put(&1, integration_id, reason))
+
+    {:noreply, socket}
+  end
+
+  # Manual refresh
+  def handle_event("refresh", _params, socket) do
+    {:noreply, trigger_refresh(socket)}
+  end
+
+  # Auto-refresh toggle
+  def handle_event("toggle_auto_refresh", %{"interval" => interval}, socket) do
+    case interval do
+      "off" ->
+        if socket.assigns[:refresh_timer], do: Process.cancel_timer(socket.assigns.refresh_timer)
+        {:noreply, assign(socket, auto_refresh: false, refresh_timer: nil)}
+      seconds ->
+        ms = String.to_integer(seconds) * 1_000
+        timer = Process.send_after(self(), :auto_refresh_tick, ms)
+        {:noreply, assign(socket, auto_refresh: true, refresh_interval_ms: ms, refresh_timer: timer)}
+    end
+  end
+
+  def handle_info(:auto_refresh_tick, socket) do
+    socket = trigger_refresh(socket)
+    timer = Process.send_after(self(), :auto_refresh_tick, socket.assigns.refresh_interval_ms)
+    {:noreply, assign(socket, refresh_timer: timer)}
+  end
+
+  defp trigger_refresh(socket) do
+    integrations = journal_capable_integrations(socket.assigns.node)
+
+    socket
+    |> assign(:pending_sources, MapSet.new(Enum.map(integrations, & &1.id)))
+    |> assign(:failed_sources, %{})
+    |> tap(fn _ ->
+      for int <- integrations, do: send(self(), {:fetch_events, int})
+    end)
+  end
 end
 ```
 
-`STR-603`: ordering preserved. `LiveView.stream` with `at: 0` inserts new entries at the top. If a backlog arrives during page load, the LiveView reconciles by sorting against the current visible cursor window.
+### 7.6.2 Progressive rendering UX
 
-## 7.9 Manual notes
+The user sees:
+
+1. **Instant** (< 50ms): local entries (executions, notes) rendered immediately. Loading indicators per external source.
+2. **Progressive** (100-500ms per source): entries merge into the timeline as each source responds. Timeline re-sorts by `occurred_at`.
+3. **Complete** (1-2s total): all loading indicators removed. Failed sources show "unavailable" marker with the integration name.
+
+Entries arriving from a slow source may be chronologically older than already-rendered entries — they insert at the correct position in the sorted timeline. LiveView streams handle this efficiently.
+
+### 7.6.3 Global timeline
+
+Same pattern as per-node, but queries each source for "recent events across all nodes" within the selected time range. Additional filters (node, group, severity) are passed to source APIs where supported, or applied post-fetch.
+
+```elixir
+def mount(_params, _session, socket) do
+  filters = %{time_range: last_24h(), severity: nil, source: nil, node: nil}
+  local_entries = Vigil.Core.Journal.local_entries_global(filters)
+  integrations = all_journal_capable_integrations()
+
+  # Same progressive pattern as per-node
+  ...
+end
+```
+
+## 7.7 Manual notes
+
+Manual notes are the one journal entry type that is fully CRUD-managed locally:
 
 ```elixir
 defmodule Vigil.Core.Journal.Notes do
@@ -279,16 +336,12 @@ defmodule Vigil.Core.Journal.Notes do
         node_id: node_id,
         entry_type: "manual_note",
         summary: summary,
-        detail: Map.put(detail, "tags", tags),
+        detail: Map.put(detail || %{}, "tags", tags),
         author_user_id: principal.id,
         severity: "notice",
-        occurred_at: DateTime.utc_now(),
-        source_event_id: "manual:#{Ecto.UUID.generate()}",
-        plugin_id: nil,
-        integration_id: nil
+        occurred_at: DateTime.utc_now()
       })
       |> Repo.insert()
-      |> broadcast_result()
     end
   end
 
@@ -311,98 +364,158 @@ end
 
 `authorize_edit/2` implements `DM-501`: only the author may modify their own manual note; all edits produce a revision row.
 
-The UI renders manual notes with a distinct visual style (`UI-406`, `JRN-304`) and shows the author and revision count.
+## 7.8 Execution journal entries
 
-## 7.10 Retention
-
-Retention runs as a periodic Oban cron job:
+When an execution completes, the `Execution.Stream` GenServer writes one journal entry per target node:
 
 ```elixir
-defmodule Vigil.Core.Journal.RetentionJob do
-  use Oban.Worker, queue: :maintenance, max_attempts: 3
-
-  @impl Oban.Worker
-  def perform(_job) do
-    policy = Settings.retention_policy()
-
-    from(e in JournalEntry,
-      where: e.occurred_at < ^cutoff(policy.journal_days),
-      where: e.entry_type != "manual_note"       # manual notes have their own policy
-    )
-    |> Repo.delete_all(timeout: :infinity)
-
-    :ok
+defmodule Vigil.Core.Execution.Completion do
+  def record_journal_entries(execution) do
+    for target <- execution.targets do
+      Vigil.Core.Journal.create_execution_entry(%{
+        node_id: target.node_id,
+        execution_id: execution.id,
+        summary: "#{execution.artifact_type}: #{execution.artifact_name}",
+        severity: severity_for_exit(target.exit_status),
+        occurred_at: execution.completed_at,
+        detail: %{
+          exit_status: target.exit_status,
+          duration_ms: target.duration_ms,
+          integration_id: execution.integration_id,
+          initiating_user: execution.user_id
+        }
+      })
+    end
   end
 end
 ```
 
-Manual notes retain longer or indefinitely by default — they're operator knowledge, not machine chatter. `NFR-1104` requires explicit policy expiration; the default policy is `:unbounded`.
+These entries are stored locally and appear immediately in the journal (no fetch needed).
 
-## 7.11 Back-references
+## 7.9 Filtering
 
-Each journal entry that derives from a structured artifact carries a reference (`JRN-401`):
+Filters are applied at different levels depending on where the data lives:
 
-```json
-"references": {
-  "report_id": "uuid-of-puppet-report",
-  "execution_id": null,
-  "provisioning_op_id": null,
-  "external_url": null
+| Filter | Local entries | External entries |
+|--------|--------------|-----------------|
+| Time range | SQL `WHERE occurred_at BETWEEN ...` | Passed to upstream API query |
+| Source/integration | SQL `WHERE` or skip query | Controls which APIs are called |
+| Severity | SQL `WHERE severity = ...` | Applied post-fetch after normalization |
+| Entry type | SQL `WHERE entry_type = ...` | Applied post-fetch after normalization |
+| Node (global view) | SQL `WHERE node_id = ...` | Passed to upstream API where supported |
+| Group (global view) | SQL join on group membership | Resolve group → node list, then filter |
+| Free text | Not applied server-side | Client-side browser filtering only |
+
+### 7.9.1 Client-side text filtering
+
+A LiveView.JS hook provides instant text filtering of rendered entries without a server round-trip:
+
+```javascript
+// assets/js/hooks/journal_filter.js
+export const JournalFilter = {
+  mounted() {
+    this.el.addEventListener("input", (e) => {
+      const query = e.target.value.toLowerCase()
+      document.querySelectorAll("[data-journal-entry]").forEach(el => {
+        const text = el.textContent.toLowerCase()
+        el.style.display = text.includes(query) ? "" : "none"
+      })
+    })
+  }
 }
 ```
 
-The UI resolves these to links. `UI-405` ("view source" affordance) is implemented as a button per entry that navigates to the relevant detail view. For external events (CloudTrail etc.), `JRN-403` permits a deep link out, clearly marked.
+This covers the "search within what's loaded" use case. For deep historical search, operators use the source tool's native interface.
 
-## 7.12 Search
+## 7.10 Visibility and RBAC
 
-Journal search combines:
-
-- **Full-text search** on the tsvector column (English dictionary by default; per-tenant configuration overrides).
-- **Structured filters** on `entry_type`, `integration_id`, `severity`, `time range`, `tags` (in detail JSONB).
-
-The `search_text` tsvector covers summary + stringified detail, giving a single-column search surface. Tag search uses JSONB containment:
+RBAC scoping for journal entries:
 
 ```elixir
-where: fragment("?->'tags' @> ?::jsonb", e.detail, ^tag_list_json)
+defp visible_integrations(principal) do
+  RBAC.allowed_integration_ids(principal, "journal:read")
+end
 ```
 
-Combined search uses AND semantics across dimensions, OR within a dimension (`UI-204`).
+- Local entries (executions, notes): filtered by node visibility in the SQL query.
+- External entries: only fetched from integrations the user has `journal:read` permission on. If a user can't see a source, it's never queried.
 
-## 7.13 Dedup semantics at the UI
+## 7.11 Back-references
 
-`JRN-202` requires distinguishing *stored* entries from *live-fetched* entries without showing duplicates. Our design keeps all journal entries in Postgres after ingestion — there is no "live fetch at render time" for journal. The distinction in the PRD addresses designs that might fetch-on-demand; our ingest-first approach makes the dedup question trivial: entries are stored, period.
+Each journal entry (local or fetched) carries a `references` map:
 
-## 7.14 Performance
+```elixir
+%{
+  report_id: "uuid-of-puppet-report",      # → navigates to report detail view
+  execution_id: "uuid-of-execution",        # → navigates to execution transcript
+  external_url: "https://..."               # → deep link out (marked as external)
+}
+```
 
-Expected volume for 10,000-node deployments:
+The UI resolves these to links. For external events, the `report_id` or equivalent can navigate to Vigil's report detail view (which itself fetches the report on-demand from the source).
 
-- Puppet events: ~10,000 nodes × ~1 change/day × 30 days = 300,000 entries
-- Executions: hundreds per day
-- Monitoring transitions: variable, usually thousands per day
-- Deployment events: low volume
+## 7.12 What we explicitly removed
 
-Yearly total in a typical deployment: 5-50 million entries. PostgreSQL with the stated indexes handles this easily. Partitioning by `occurred_at` quarter is planned at 50M+ and is non-disruptive (native partitioning; existing queries continue to work).
+Compared to earlier designs, this architecture eliminates:
 
-Query performance targets:
+- **Event pollers** — no background processes fetching events on a schedule
+- **Webhook handlers for journal ingestion** — webhooks may exist for other purposes (cache invalidation, execution triggers) but not for populating the journal
+- **Journal ingestor (Oban worker)** — no write pipeline for external events
+- **Checkpoint tracking** — no need to track "last processed event ID" per source
+- **Deduplication logic** — no local store means no dedup needed (source is authoritative)
+- **Journal retention jobs for external data** — the source tool manages its own retention
+- **Full-text search index (tsvector)** — replaced by client-side filtering
+- **PubSub broadcast for new journal entries from external sources** — no auto-refresh
 
-- Per-node timeline (first page 50 entries): < 50ms at 50M total
-- Global timeline with text search: < 500ms at 50M total
-- Live update latency (ingestor → PubSub → LiveView): < 100ms end-to-end
+## 7.13 Performance
+
+Expected latency for journal rendering:
+
+| Scenario | Expected latency |
+|----------|-----------------|
+| Local entries (executions + notes) | < 50ms |
+| Single external source (PuppetDB events for one node) | 100-300ms |
+| All sources for one node (3-4 integrations) | 500ms-1.5s total (progressive) |
+| Global timeline (all sources, recent window) | 1-2s total (progressive) |
+
+These are acceptable for a 5-user ops team. The progressive rendering pattern means the user sees *something* immediately and the view fills in over 1-2 seconds.
+
+### 7.13.1 Short-term ETS cache for navigation
+
+To avoid re-fetching when a user navigates away and back within seconds, fetched external events are cached briefly in ETS (30-60s TTL, keyed by `{integration_id, node_id, filter_hash}`). This is a UX optimization, not a data persistence mechanism. The cache is never served stale — on expiry, the next view triggers a fresh fetch.
+
+## 7.14 Graceful degradation
+
+When an external source is unavailable:
+
+1. Local entries still render immediately.
+2. The failed source shows a clear marker: "PuppetDB events unavailable — source unreachable."
+3. Other sources that responded successfully are shown normally.
+4. The user can retry the failed source via the refresh button.
+
+This is honest — the user sees exactly what's available and what isn't. No stale copies masquerading as current data.
 
 ## 7.15 Testing
 
-Property-based tests (`TEST-203`) for event extraction:
+Property-based tests (`TEST-203`) for event normalization:
 
-- Synthetic Puppet reports with varying mixes of changes and noops → extractor never emits noops.
-- Duplicate report ingest → no duplicate entries.
+- Synthetic Puppet events with varying mixes of changes and noops → normalizer never emits noops.
 - Events from one report → all share the `group_key`.
-- Monitoring transitions → one entry per transition, none for steady state.
+- Monitoring state history → transitions detected correctly, steady state produces no entries.
 
-End-to-end tests:
+Integration tests:
 
 - Create manual note, verify it appears in per-node and global timelines.
-- Submit execution, verify journal entries arrive after completion.
-- Simulate monitoring transition via fixture, verify transition entry.
+- Submit execution, verify journal entries appear immediately (local).
+- Mock external API responses, verify progressive rendering merges correctly.
+- Simulate source failure, verify degraded state marker appears.
+
+LiveView tests:
+
+- Mount journal, verify local entries render immediately.
+- Verify async messages merge entries in correct chronological order.
+- Verify filter controls pass parameters to fetch functions.
+- Verify refresh button re-triggers fetches.
 
 ---
 

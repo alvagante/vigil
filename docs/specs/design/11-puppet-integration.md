@@ -14,7 +14,6 @@ Vigil.Integrations.Puppet.Application
       ├── Vigil.Integrations.Puppet.ConfigServer
       ├── Vigil.Integrations.Puppet.Health
       ├── Vigil.Integrations.Puppet.PuppetDB.Client        # Finch-backed HTTP
-      ├── Vigil.Integrations.Puppet.PuppetDB.EventPoller   # periodic event/report poll
       ├── Vigil.Integrations.Puppet.Puppetserver.Client
       ├── Vigil.Integrations.Puppet.Hiera.Reader
       ├── Vigil.Integrations.Puppet.Hiera.UsageAnalyzer    # static analysis of control-repo
@@ -342,38 +341,59 @@ end
 
 ### 11.3.6 Events and Reports
 
-Events come from PuppetDB via PQL. The `EventPoller` GenServer runs on a timer (default 30s) and fetches events since the last checkpoint:
+Events are fetched on-demand from PuppetDB via PQL when the user views the journal. The plugin's Events capability implements `fetch_events/3`:
 
 ```elixir
-def handle_info(:poll, state) do
-  query = ~s|events[certname, timestamp, resource_type, resource_title, status, old_value, new_value, message, file, line, containment_path] {
-              timestamp > "#{state.checkpoint}"
-              and status in ["success", "failure"]        # PUP-604: noop excluded by default
+defmodule Vigil.Integrations.Puppet.Events do
+  def fetch_events(config, node_certname, opts) do
+    time_range = Keyword.fetch!(opts, :time_range)
+
+    query = ~s|events[certname, timestamp, resource_type, resource_title, status,
+               old_value, new_value, message, file, line, containment_path, report] {
+              certname = "#{node_certname}"
+              and timestamp >= "#{time_range.from}"
+              and timestamp <= "#{time_range.to}"
+              and status in ["success", "failure"]        # PUP-604: noop excluded
             }|
-  case PuppetDB.Client.query(state.integration_id, query, timeout: 60_000) do
-    {:ok, events} ->
-      entries = Enum.map(events, &event_to_journal_entry(&1, state.integration_id))
-      Vigil.Core.Journal.Ingestor.enqueue(entries)
-      {:noreply, %{state | checkpoint: last_timestamp(events, state.checkpoint)}}
-    {:error, _} ->
-      schedule_next_poll(state)
-      {:noreply, state}
+
+    case PuppetDB.Client.query(config.integration_id, query, timeout: 30_000) do
+      {:ok, events} ->
+        {:ok, Enum.map(events, &normalize_event(&1, config.integration_id))}
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp normalize_event(event, integration_id) do
+    %{
+      source_event_id: "#{event["report"]}:#{event["resource_type"]}[#{event["resource_title"]}]",
+      occurred_at: parse_timestamp(event["timestamp"]),
+      entry_type: "configuration_change",
+      summary: "#{event["resource_type"]}[#{event["resource_title"]}]: #{event["message"]}",
+      severity: if(event["status"] == "failure", do: :error, else: :informational),
+      detail: %{
+        resource_type: event["resource_type"],
+        resource_title: event["resource_title"],
+        old_value: event["old_value"],
+        new_value: event["new_value"],
+        file: event["file"],
+        line: event["line"],
+        containment_path: event["containment_path"]
+      },
+      group_key: event["report"],
+      references: %{report_id: event["report"]}
+    }
   end
 end
 ```
 
-Each event becomes a journal entry with:
+Each event is normalized with:
 - `group_key = report_id` (all events from one run grouped — `PUP-603`, `JRN-005`).
-- `references = %{report_id: ...}` for drill-back.
-- `source_event_id = event_hash` for idempotency.
+- `references = %{report_id: ...}` for drill-back to the report detail view.
 
-Reports are ingested on the same pipeline. On report ingestion:
+Reports are fetched on-demand via the Reports capability. When the user navigates to a report detail view, the full report is fetched from PuppetDB and rendered. No local storage of reports or events — PuppetDB is the source of truth.
 
-1. Insert the report into `reports` table.
-2. Extract events (filter noop — `PUP-604`).
-3. Enqueue resulting journal entries.
-
-If webhooks from Puppet's report processor are available (`PUP-1003`), they push to `POST /webhooks/puppet/:integration_id`; the controller schedules immediate ingestion rather than waiting for the next poll.
+> **Note:** There is no EventPoller, no webhook handler for journal ingestion, and no checkpoint tracking. Events are fetched fresh from PuppetDB each time the journal is viewed. PuppetDB's own retention policy governs how far back events are available.
 
 ## 11.4 Caching
 
@@ -394,7 +414,6 @@ Cache invalidation events:
 
 - `flush_environment_cache` → invalidates Puppetserver catalog cache + Vigil's catalog cache for that environment.
 - Control-repo file change (FileSystem watcher) → invalidates Hiera resolution cache, usage analysis cache.
-- New report ingested → invalidates recent-reports cache for that node.
 - User clicks "refresh" → full flush for the selected scope (`PUP-1005`).
 
 ## 11.5 Health checks
@@ -491,7 +510,7 @@ Each is registered at plugin load time via `Vigil.Core.RBAC.register_permissions
 |----------|----------|
 | List 10,000-node inventory | PuppetDB `nodes[certname]` query with paginated certname iteration; ~800ms cold |
 | Facts for 10,000 nodes | Not done in bulk — per-node queries via cache lookups; facts search via PQL with predicate pushdown |
-| Full report sweep | `EventPoller` uses checkpoint; steady-state fetches only new events |
+| Full report sweep | On-demand PQL query with time-range filter; response time depends on PuppetDB retention volume |
 | Catalog diff | On-demand Puppetserver call per side; concurrency-limited to avoid flooding |
 | Hiera resolution | File reads on a warm page cache are sub-millisecond; resolution cache for repeated queries |
 

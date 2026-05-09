@@ -336,25 +336,25 @@ Vigil.Core.Provisioning.Supervisor  (DynamicSupervisor)
 
 `PROV-COM-003` (new node in inventory within one refresh cycle) is satisfied by publishing `{:inventory_changed, integration_id, :partial, [new_node_id]}` once the provisioning plugin confirms the node exists. The inventory cache warmer listens for this and refreshes the affected source.
 
-### 6.9.1 Real-time journal population from upstream events
+### 6.9.1 Provisioning events in the journal
 
-`PROV-COM-001` mandates journal entries from upstream event logs, not local inference. Implementation:
+`PROV-COM-001` mandates journal entries from upstream event logs, not local inference. In the fetch-on-demand journal model:
 
-- Each provisioning-capable plugin has an `EventLogPoller` process that periodically queries the upstream event log (CloudTrail, Azure Activity Log, Proxmox task log).
-- New events are normalized to journal entries and written via `Vigil.Core.Journal`.
-- The poller captures the correlation ID at submission (`AWS-403`, `AZ-403`) to correlate user-initiated ops with the upstream events they produce.
+- Provisioning lifecycle events (CloudTrail, Azure Activity Log, Proxmox task log) are fetched from the source API when the user views the node's journal timeline.
+- Each provisioning-capable plugin's Events capability normalizes these upstream events into the standard journal entry format at fetch time.
+- The correlation ID captured at submission (`AWS-403`, `AZ-403`) allows the journal view to correlate user-initiated ops with the upstream events they produce.
 
-This keeps journal entries authentic — they reflect what the cloud/hypervisor *actually did*, not what Vigil thought it requested.
+This keeps journal entries authentic — they reflect what the cloud/hypervisor *actually did*, not what Vigil thought it requested. The source tool remains the authoritative record.
 
-## 6.10 Monitoring live updates
+## 6.10 Monitoring in the journal
 
-Monitoring updates share the streaming infrastructure but with different semantics:
+Monitoring data in the journal follows the same fetch-on-demand pattern:
 
-- Push-capable sources (webhook, streaming API) feed events directly into the journal ingestor.
-- Polled sources run in Oban jobs at configured intervals.
-- State transitions (`TYPE-MON-003`, `FLOW-601`) emit journal entries only on change — the monitoring workers maintain last-known state per node and diff.
+- Monitoring state transitions are derived from the source tool's state history API at fetch time (see [section 7](07-journal-and-events.md) for the normalization logic).
+- Only state *changes* appear as journal entries (`TYPE-MON-003`, `FLOW-601`); steady-state observations are filtered out during normalization.
+- Current monitoring status (for the node detail page's live status display) is fetched separately via the Monitoring capability and cached briefly in ETS.
 
-LiveViews on the node detail subscribe to `monitoring:<node_id>` for live state updates without generating journal entries. Transitions flow through the journal pipeline (see [section 7](07-journal-and-events.md)).
+There is no background polling or webhook handling for journal population. The journal view fetches monitoring transitions on-demand like any other external event source.
 
 ## 6.11 Testing
 

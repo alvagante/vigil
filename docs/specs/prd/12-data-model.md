@@ -238,8 +238,8 @@ The following list enumerates the principal relationships among entities. Cardin
 
 | ID | Requirement |
 |----|-------------|
-| `DM-1101` | Inventory, Facts, and Configuration data are **derived** — the platform queries them on demand and caches them. They are not authoritatively stored by Vigil. |
-| `DM-1102` | Journal Entries, Reports (after retrieval from source), and Executions **MUST** be persisted by the platform, with a configurable retention policy. |
+| `DM-1101` | Inventory, Facts, Configuration, Events, Monitoring state, Reports, Provisioning lifecycle events, and Deployment events are **derived** — the platform queries them on demand from the source tool and caches them short-term. They are not authoritatively stored by Vigil. The source tool remains the single source of truth. |
+| `DM-1102` | Execution transcripts and manual journal notes **MUST** be persisted by the platform, as Vigil is the originating source. Configurable retention policy applies. |
 | `DM-1103` | The audit trail **MUST** be persisted independently of journal data, with its own retention policy. |
 | `DM-1104` | The platform **MUST NOT** auto-delete persisted data without explicit retention policy expiration. Manual purge is administrator-only. |
 

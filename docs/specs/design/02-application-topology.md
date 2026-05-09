@@ -42,7 +42,6 @@ Vigil.Application
 ├── Vigil.Telemetry.Supervisor               # telemetry reporter, metrics
 ├── Vigil.Core.Supervisor                    # domain services
 │   ├── Vigil.Core.Inventory.Linker           # identity linking worker pool
-│   ├── Vigil.Core.Journal.Ingestor           # journal write pipeline
 │   ├── Vigil.Core.Execution.Supervisor       # execution streams (DynamicSupervisor)
 │   ├── Vigil.Core.Cache                      # ETS cache server
 │   ├── Vigil.Core.Cache.Janitor              # TTL sweeper
@@ -163,11 +162,9 @@ PubSub is the primary cross-process eventing channel. Topics and their payloads 
 | `integration_health:<id>` | Plugin health worker | Status dashboard, admin LiveViews | `{:health, status, capabilities, diagnostic}` |
 | `integration_health:all` | Plugin health worker | Metrics collector | Rollup events |
 | `inventory_changed:<integration_id>` | Plugin inventory refresh | Inventory LiveView, linker | `{:inventory_changed, :full | :partial, changed_ids}` |
-| `node:<node_id>` | Journal ingestor, execution stream | Node detail LiveView | `{:journal_entry, entry}`, `{:fact_update, diff}` |
-| `journal:global` | Journal ingestor | Global timeline LiveView | `{:journal_entry, entry}` |
+| `node:<node_id>` | Execution stream | Node detail LiveView | `{:fact_update, diff}` |
 | `execution_stream:<id>` | Execution stream GenServer | Execution LiveView, audit | `{:chunk, stream, text}`, `{:ended, status}` |
 | `provisioning:<op_id>` | Provisioning tracker | Provisioning LiveView | `{:state, new_state}`, `{:ended, result}` |
-| `monitoring:<node_id>` | Monitoring plugin | Node detail LiveView | `{:check, state, timestamp}` |
 | `cache_invalidated:<integration_id>` | Cache invalidator | Cache, affected LiveViews | `{:invalidate, keys}` |
 | `user_session:<user_id>` | Auth controller | All user LiveViews | `{:logout}` (cross-tab, `STR-1003`) |
 

@@ -273,11 +273,12 @@ Deep linking to tabs works via URL patterns like `/inventory/node/<id>/configura
 
 ### 9.6.3 GlobalTimelineLive
 
-Streaming timeline of journal entries. Supports:
+Timeline of journal entries, fetched on-demand from source APIs. Supports:
 
 - Type filter, severity filter, source filter, time-range picker.
-- Full-text search box (debounced).
-- "Live" toggle; when on, new entries appear at top via PubSub.
+- Full-text search box (client-side filtering of loaded entries).
+- Auto-refresh toggle (off by default per `JRN-205`); when enabled, periodic re-fetches from upstream APIs with selectable interval and visible notice (`JRN-206`).
+- Vigil-originated entries (executions, manual notes) appear immediately via PubSub without requiring the toggle.
 - Click entry to expand (show detail payload, back-references).
 - Click back-reference to navigate to report/execution.
 

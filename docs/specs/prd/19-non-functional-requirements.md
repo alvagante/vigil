@@ -9,7 +9,7 @@ This section consolidates cross-cutting properties the system must exhibit. Many
 | `NFR-001` | The system **MUST** support inventories of up to 10,000 nodes without functional degradation. |
 | `NFR-002` | First-page render of any list view at the target scale, given a healthy primary source, **MUST** complete within 2 seconds. |
 | `NFR-003` | Aggregation operations **MUST** complete within 5 seconds at the target scale, with progressive results allowed (fast sources first, slow sources later). |
-| `NFR-004` | The system **MUST** sustain 50 concurrent active users without queuing read requests. |
+| `NFR-004` | The system **MUST** sustain 5 concurrent active users without queuing read requests. |
 | `NFR-005` | The system **MUST** sustain 100 concurrent streaming executions without dropping output. |
 | `NFR-006` | Per-request latency at the API surface **MUST** have a P95 under 500 ms for cache-hit reads at the target scale. |
 | `NFR-007` | The system **MUST NOT** scale aggregate latency linearly with the number of integrations — adding integrations **MUST NOT** make the inventory page slower than its slowest source. |

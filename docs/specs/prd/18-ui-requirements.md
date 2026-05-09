@@ -85,7 +85,7 @@ The node detail page is the application's most data-rich screen. It aggregates d
 | `UI-404` | Filters **MUST** be combinable. |
 | `UI-405` | Each entry **MUST** show: timestamp, source icon, type, summary, and (when available) a "view source" affordance leading to the underlying report or execution transcript. |
 | `UI-406` | Manual journal notes **MUST** be visually distinct (e.g., distinct color or icon) and **MUST** show the authoring user. |
-| `UI-407` | Journal entries **MUST** be live-updated — new entries appear without manual refresh. |
+| `UI-407` | Vigil-originated journal entries (executions, manual notes) **MUST** appear in the timeline immediately upon creation without requiring a manual refresh. External-source entries **MUST NOT** auto-refresh by default — they are fetched on page load or explicit user action per `JRN-205`/`JRN-206`. |
 | `UI-408` | The user **MUST** be able to add a manual note from the journal view, scoped to the current node or group. |
 
 ## 18.6 Execution UI

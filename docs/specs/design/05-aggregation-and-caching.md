@@ -68,6 +68,8 @@ end
 
 The inventory LiveView receives a `{:partial_nodes, integration_id, result}` message per source as they complete. It merges into the display as each arrives. Users see fast sources first; slow sources appear when ready; unreachable sources show a marker. This is the pattern that services `FLOW-502` and `UI-207`.
 
+The same progressive rendering pattern is used for the **journal timeline** (see [section 7](07-journal-and-events.md)). The journal fetches events from each integration's API on-demand when the user views the page, merging results into a chronologically-sorted timeline as each source responds. Local entries (executions, manual notes) render immediately from PostgreSQL; external events fill in progressively.
+
 ## 5.2 Identity linking
 
 The linker is the single most delicate piece of domain logic. It decides whether two observations from different sources describe the same node. PRD sections 11.1.2 and 12.1.1 constrain the behaviour; this section defines the implementation.
@@ -397,7 +399,7 @@ Dashboards built from these events answer: which source is the slowest? Which in
 |--------|-----------|
 | 10,000-node inventory in 2 seconds first-page render (`PERF-002`) | ETS cache hit + cursor pagination; aggregation runs in under 500ms cached |
 | No slower-than-slowest-source latency (`EXS-002`, `NFR-007`) | Fast-sources-first progressive rendering |
-| 50 concurrent users no read queueing (`PERF-007`) | Ecto pool sized for concurrency + LiveView per-process isolation |
+| 5 concurrent users no read queueing (`PERF-007`) | Ecto pool sized for concurrency + LiveView per-process isolation |
 | 100 concurrent streaming executions (`PERF-008`, `STR-101`) | Dynamic supervisor, per-execution process, no shared state |
 | Request deduplication (`PERF-004`, `PUP-1004`) | Request coalescer in the dispatcher |
 | Incremental updates (`PERF-009`, `STR-502`) | Plugin supports change-feed queries; dispatcher passes checkpoint |

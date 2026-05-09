@@ -79,7 +79,7 @@ These are explicitly low-value categories. The system **SHOULD NOT** invest test
 
 | ID | Requirement |
 |----|-------------|
-| `TEST-701` | The system **MUST** have performance tests verifying the scale targets: 10,000-node inventory rendered within 2 seconds; 100 concurrent streaming executions; 50 concurrent users. |
+| `TEST-701` | The system **MUST** have performance tests verifying the scale targets: 10,000-node inventory rendered within 2 seconds; 100 concurrent streaming executions; 5 concurrent users. |
 | `TEST-702` | Performance tests **MUST** run as part of the release process. Regressions **MUST** block release. |
 | `TEST-703` | Performance tests **MUST** measure latency percentiles (P50, P95, P99), not averages alone. |
 

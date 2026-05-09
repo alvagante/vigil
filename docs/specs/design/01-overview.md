@@ -65,10 +65,10 @@ Vigil is a single Elixir umbrella application rendering HTML over WebSockets via
 > `CACHE-006` requires cache keys scoped to the requesting principal's permission scope. An external cache with per-principal namespacing is buildable but adds an operational dependency for a problem ETS solves in-node with no network hop. Cache sizes are bounded per integration, eviction is LRU, and invalidation is a `:ets.select_delete/2`.
 
 > **Decision: Oban for background jobs.**
-> Health checks, scheduled inventory refresh, journal ingestion from webhooks, AI calls, retention purges — all are background work. Oban gives us persisted jobs in PostgreSQL, cron scheduling, retries with backoff, per-queue concurrency limits, and a dashboard. No external broker. PRD `FUT-101` (scheduled executions) plugs into the same layer.
+> Health checks, scheduled inventory refresh, AI calls, retention purges — all are background work. Oban gives us persisted jobs in PostgreSQL, cron scheduling, retries with backoff, per-queue concurrency limits, and a dashboard. No external broker. PRD `FUT-101` (scheduled executions) plugs into the same layer.
 
 > **Decision: Phoenix.PubSub for cross-process eventing.**
-> Integration health updates, journal entries, execution output, cache invalidations all flow over named PubSub topics. LiveView processes subscribe. MCP tools subscribe. The plugin framework subscribes. There is no request-response dance between the UI and integrations; there is publish-subscribe to topics the UI and the ingestion layer both know about.
+> Integration health updates, execution output, cache invalidations all flow over named PubSub topics. LiveView processes subscribe. MCP tools subscribe. The plugin framework subscribes. There is no request-response dance between the UI and integrations; there is publish-subscribe to topics the UI and the domain layer both know about.
 
 > **Decision: One Ecto Repo, multi-tenant-capable schemas.**
 > `FUT-401` hints at multi-tenancy without committing. All tenant-sensitive tables carry a `tenant_id` column, defaulting to a single "default" tenant in single-tenant deployments. If multi-tenancy becomes scope, no schema migration is required — only query scoping and Ecto prepare-queries.
