@@ -33,6 +33,7 @@ The user flows in [section 13](13-user-flows.md) define the end-to-end test surf
 |----|-------------|
 | `TEST-201` | **Node identity linking** — given a corpus of synthetic identity tuples (certnames, FQDNs, hostnames, IPs) with intentional ambiguity, the linking algorithm **MUST** produce stable, correct results. Property-based tests **MUST** explore the input space at thousands-of-nodes scale. |
 | `TEST-202` | **RBAC permission evaluation** — given a corpus of role definitions, group memberships, and action requests, the permission resolver **MUST** produce correct allow/deny decisions. Property tests **MUST** include role union (additive), wildcard mappings, target scoping, and break-glass scenarios. |
+| `TEST-202a` | **RBAC query efficiency** — authorization checks against N targets **MUST** be asserted to issue a constant (bounded) number of data-store queries regardless of N. Tests **MUST** explicitly count queries at N = 1, 10, 100, and 1000 targets and fail on any per-target query pattern. This closes the gap that a functionally correct but linearly-scaling implementation would otherwise pass (`RBAC-108`). |
 | `TEST-203` | **Journal event extraction** — given synthetic Puppet reports, AWS CloudTrail events, and monitoring transitions, event extraction **MUST** produce the correct journal entries and grouping. Properties to test: no-op runs produce no entries; events from one report share a group key; steady-state monitoring produces no entries. |
 | `TEST-204` | **Cache coalescing** — given concurrent requests for the same cache key, the system **MUST** issue one upstream call. Property tests **MUST** verify under varying concurrency and timing. |
 
@@ -99,6 +100,7 @@ These are explicitly low-value categories. The system **SHOULD NOT** invest test
 | `TEST-901` | Tests at scale **MUST** use realistic data shapes — node counts, fact sizes, event volumes representative of real deployments. |
 | `TEST-902` | The system **MUST** ship with a data generator capable of producing realistic synthetic inventories at the target scale, used by performance and property tests. |
 | `TEST-903` | Test fixtures **MUST** include the awkward cases: nodes with missing attributes; nodes with conflicting attributes across sources; groups with overlapping membership; users with multiple group-mapped roles. |
+| `TEST-904` | Fact-payload fixtures **MUST** use realistic per-node sizes (typically 50–200 KB of structured facts per node for Puppet, proportionally sized for other sources). Performance tests that serve compressed or abridged fixture payloads **MUST** document the abridgement and **MUST NOT** be used to validate memory or bandwidth budgets at scale. |
 
 ## 16.7 Testing in CI
 

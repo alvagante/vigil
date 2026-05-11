@@ -92,6 +92,7 @@ This section covers the cross-integration aspects of remote execution. Per-integ
 | `EXEC-103` | Streaming **MUST** survive UI disconnect/reconnect — the server-side execution **MUST NOT** be affected by client disconnection, and on reconnection, the UI **MUST** resume from the last received position with no lost output. |
 | `EXEC-104` | Multiple users viewing the same execution **MUST** see the same stream concurrently, with consistent ordering. |
 | `EXEC-105` | The platform **MUST** support 100 concurrent streaming executions without dropping output. |
+| `EXEC-106` | In-flight execution output **MUST** survive a graceful platform restart without data loss perceived by the user. The platform **MUST** drain in-flight executions on `SIGTERM` — buffered output persisted, streams closed cleanly, or executions handed off if architecture permits — within a configurable drain window before the process exits. For very long executions that exceed the drain window, the platform **MUST** periodically checkpoint buffered output to persistent storage so reconnecting clients after restart can retrieve output produced prior to the restart. A partial-output transcript is **REQUIRED**; silent loss of output is **NOT ACCEPTABLE**. |
 
 ### 11.2.3 Execution history
 
@@ -170,7 +171,7 @@ The journal is the per-node history of significant events. The global timeline i
 
 ## 11.4 Authentication
 
-### 11.4.1 Local authentication (Phase 1)
+### 11.4.1 Local authentication and sessions (CE)
 
 | ID | Requirement |
 |----|-------------|
@@ -183,20 +184,38 @@ The journal is the per-node history of significant events. The global timeline i
 | `AUTH-007` | The platform **MUST** enforce a minimum password complexity, rate-limit login attempts, and log authentication failures with sufficient detail for security review. |
 | `AUTH-008` | The platform **MUST** support password change for the authenticated user. |
 | `AUTH-009` | Local authentication **MUST** remain functional even when external authentication is unavailable (break-glass access). |
+| `AUTH-010` | The platform **MUST** debounce writes of the session's "last active" timestamp to at most once per configurable interval (default 5 minutes). Unbounded write-per-request **MUST NOT** occur. The debounce interval **MUST** remain short enough that idle-timeout enforcement is accurate within one interval. |
 
-### 11.4.2 External authentication (Phase 2)
+### 11.4.2 OIDC authentication (CE)
+
+A minimal OIDC profile ships in CE so self-hosted teams can integrate with their identity provider (Google Workspace, GitHub, Keycloak, Azure AD via OIDC) without an enterprise license. The profile is deliberately scoped to what a small team needs.
 
 | ID | Requirement |
 |----|-------------|
-| `AUTH-101` | The platform **MUST** support **SAML 2.0** authentication for enterprise SSO (Okta, Azure AD, ADFS, Keycloak). |
-| `AUTH-102` | The platform **MUST** support **OIDC / OAuth 2.0** authentication, including standard providers (Google, GitHub) and generic OIDC providers. |
-| `AUTH-103` | The platform **MUST** support **LDAP / Active Directory** authentication via direct bind or search-based bind. |
-| `AUTH-104` | External users **MUST** authenticate exclusively through their IdP — the platform **MUST NOT** store or accept passwords for externally-authenticated users. |
-| `AUTH-105` | The platform **MUST** support **JIT (just-in-time) provisioning** — a user record is created on first successful authentication via an IdP. No pre-provisioning is required. |
-| `AUTH-106` | Local users and externally-authenticated users **MUST** coexist. Local accounts remain available for initial setup, break-glass, and environments without an IdP. |
-| `AUTH-107` | The platform **MUST** allow administrators to disable local authentication entirely (with explicit confirmation that a break-glass plan exists). |
-| `AUTH-108` | The platform **MUST** support multiple IdPs concurrently — e.g., SAML for staff plus an OIDC for contractors. |
-| `AUTH-109` | When an IdP is unavailable, the platform **MUST** continue serving authenticated sessions for users whose tokens are still valid; new logins via that IdP **MUST** fail with a clear error. |
+| `AUTH-051` | The platform **MUST** support OIDC / OAuth 2.0 authentication with a single configured OIDC provider. |
+| `AUTH-052` | Users authenticating via OIDC **MUST** be JIT-provisioned — a user record is created on first successful authentication via the OIDC provider. No pre-provisioning is required. |
+| `AUTH-053` | The platform **MUST** support **direct (literal) group-to-role mapping** for the OIDC provider: administrator configures exact-match group names that map to roles. Wildcard patterns and regular expressions are **NOT** included in CE (see `AUTH-108` for EE). |
+| `AUTH-054` | OIDC users **MUST** authenticate exclusively through their IdP — the platform **MUST NOT** store or accept passwords for OIDC-authenticated users. |
+| `AUTH-055` | Local users and OIDC users **MUST** coexist. Local accounts remain available for initial setup, break-glass, and environments without an IdP. |
+| `AUTH-056` | When the OIDC provider is unavailable, already-authenticated sessions **MUST** continue to serve; new OIDC logins **MUST** fail with a clear error; local authentication remains available. |
+| `AUTH-057` | The platform **MUST NOT** support multiple concurrent OIDC providers in CE. Multi-IdP OIDC is an EE capability (see `AUTH-102`). |
+
+### 11.4.3 Enterprise external authentication (EE)
+
+> **Edition:** The requirements in this section are provided by `vigil_enterprise` and require a valid EE license (see `docs/specs/editions.md`). They extend — but do not replace — the CE OIDC baseline in 11.4.2. A CE-only deployment implements `AUTH-001` through `AUTH-057` and nothing in this section.
+
+| ID | Requirement |
+|----|-------------|
+| `AUTH-101` | The platform (EE) **MUST** support **SAML 2.0** authentication for enterprise SSO (Okta, Azure AD, ADFS, Keycloak). |
+| `AUTH-102` | The platform (EE) **MUST** support **multiple concurrent OIDC providers** — extending the CE single-provider baseline — so staff and contractors (or multiple business units) can authenticate via different OIDC IdPs simultaneously. |
+| `AUTH-103` | The platform (EE) **MUST** support **LDAP / Active Directory** authentication via direct bind or search-based bind. |
+| `AUTH-104` | EE external users **MUST** authenticate exclusively through their IdP, with the same password-absence constraint as CE OIDC users (`AUTH-054`). |
+| `AUTH-105` | EE **MUST** extend JIT provisioning to all EE-supported IdP types (SAML, LDAP, multi-IdP OIDC) with the same zero-pre-provisioning contract as `AUTH-052`. |
+| `AUTH-106` | EE **MUST** allow administrators to disable local authentication entirely (with explicit confirmation that a break-glass plan exists). Disabling local authentication is **NOT** available in CE — CE always keeps local auth as a fallback path. |
+| `AUTH-107` | EE **MUST** support multiple IdPs of different protocols concurrently — e.g., SAML for staff plus OIDC for contractors plus LDAP for service accounts. |
+| `AUTH-108` | EE **MUST** extend group-to-role mapping beyond the CE literal-match baseline (`AUTH-053`) with **wildcard patterns** — e.g., groups matching `vigil-*` map to a Vigil role named after the suffix. |
+| `AUTH-109` | EE **MUST** re-evaluate group memberships on each authentication event (or token refresh, where applicable) — group changes propagate without requiring user re-creation. Multi-group resolution **MUST** be additive: a user in groups A, B, C receives roles from all matching mappings. CE's literal OIDC mapping is a simpler subset of this behaviour. |
+| `AUTH-110` | When an EE-configured IdP is unavailable, the platform **MUST** continue serving authenticated sessions for users whose tokens are still valid; new logins via that IdP **MUST** fail with a clear error; break-glass access remains available subject to `AUTH-106`. |
 
 ## 11.5 Authorization and RBAC
 
@@ -221,16 +240,19 @@ The journal is the per-node history of significant events. The global timeline i
 | `RBAC-105` | The platform **MUST** support **per-provisioning-action and per-node/group restrictions** — a role may perform only specific lifecycle operations on specific integrations, and those restrictions **MAY** be further scoped to specific nodes or groups. |
 | `RBAC-106` | Granular permissions **MUST** apply regardless of authentication method. |
 | `RBAC-107` | The platform **MUST** support per-target scoping where the integration provides target metadata (e.g., AWS tags, Azure resource groups, group membership, Puppet certnames) — a role may execute only against specific nodes, groups, or nodes matching a filter (e.g., `env=dev` instances). Per-node/group scoping **MUST** apply to all granular permission types (per-command, per-task, per-playbook, per-provisioning-action). |
+| `RBAC-108` | Target-scope evaluation across N targets in a single authorization check **MUST** issue a constant (bounded) number of data-store queries regardless of N. Linear (per-target) query patterns **MUST NOT** be used in the evaluator's hot path. This requirement applies at submission time (pre-execution) and at run time (for scheduled executions, per `FUT-106`). |
 
 ### 11.5.3 Group-to-role mapping
+
+CE provides literal group-to-role mapping for the OIDC provider. EE extends this with wildcard patterns, IdP group re-evaluation on every login, and additive multi-group resolution across multiple IdPs.
 
 | ID | Requirement |
 |----|-------------|
 | `RBAC-201` | The platform **MUST** support administrator-configured mappings from external IdP groups to Vigil roles. |
 | `RBAC-202` | Mappings **MUST** support multiple group memberships — a user in groups A, B, C maps to all roles those groups confer (additive). |
 | `RBAC-203` | The platform **MUST** support a configurable **default role** for users whose external groups do not match any mapping. The default **MAY** be set to "deny access" to enforce explicit allow-listing. |
-| `RBAC-204` | Mappings **MUST** support wildcard patterns — e.g., groups matching `vigil-*` map to a Vigil role named after the suffix. |
-| `RBAC-205` | The platform **MUST** re-evaluate group memberships on each authentication event (or token refresh, where applicable) — group changes propagate without requiring user re-creation. |
+| `RBAC-204` | Mappings **MUST** support wildcard patterns — e.g., groups matching `vigil-*` map to a Vigil role named after the suffix. **Wildcard patterns are an EE feature**; CE supports literal-match group names only (see `AUTH-053`, `AUTH-108`). |
+| `RBAC-205` | The platform **MUST** re-evaluate group memberships on each authentication event (or token refresh, where applicable) — group changes propagate without requiring user re-creation. **Re-evaluation on every login is an EE feature**; CE applies group mapping at JIT provisioning and at explicit administrator "refresh user" actions (see `AUTH-109`). |
 | `RBAC-206` | The platform **MUST** display, per user, the source of each role assignment (direct vs. group-mapped) and the originating group for transparency. |
 
 ### 11.5.4 Audit trail
@@ -241,6 +263,8 @@ The journal is the per-node history of significant events. The global timeline i
 | `RBAC-302` | Each audit entry **MUST** include: timestamp, actor, action, target, parameters (with secrets redacted), result. |
 | `RBAC-303` | The audit trail **MUST** be retrievable by administrators and auditors with filtering by actor, action type, target, and time range. |
 | `RBAC-304` | The audit trail **MUST NOT** be modifiable by ordinary users. Administrators **MAY** export but **MUST NOT** delete entries (subject to a configurable retention policy). |
+| `RBAC-305` | For irreversible actions (remote execution submission, provisioning lifecycle operations, environment deployment, RBAC and integration configuration changes), the audit entry **MUST** be recorded in state `pending` **before** the action's side effect is initiated, and transitioned to `success` or `failure` on completion. A crash or partition between the pending write and the action finalisation **MUST** leave a durable `pending` record that can be reconciled — it **MUST NOT** leave a side effect with no audit record. |
+| `RBAC-306` | Read-only actions (inventory queries, fact lookups, journal viewing) **MAY** use a simpler write-after-action audit pattern, or be sampled at configurable rates, since their absence from the audit trail does not create an accountability gap. |
 
 ## 11.6 Resilience
 
@@ -284,6 +308,7 @@ The journal is the per-node history of significant events. The global timeline i
 | `HEALTH-002` | Health status **MUST** include: overall integration health, per-capability health, last successful call timestamp, last failure timestamp, last failure detail. |
 | `HEALTH-003` | Health checks **MUST** use lightweight probes — they **MUST NOT** dominate the integration's call budget. |
 | `HEALTH-004` | Health check failures **MUST NOT** cascade. One unhealthy integration's failing probe **MUST NOT** fail another's. |
+| `HEALTH-005` | Continuous per-integration health probing **MUST** be owned by a single canonical mechanism per integration (see design for the concrete process model). Scheduled background-job queues **MUST NOT** duplicate the liveness-probe role — they **MAY** only schedule lower-frequency maintenance tasks (retention sweeps, long-horizon recomputations). Double-firing of health probes **MUST NOT** occur. |
 
 ### 11.7.2 Integration status dashboard
 
@@ -316,6 +341,7 @@ The journal is the per-node history of significant events. The global timeline i
 | `PERF-007` | The platform **MUST** support 5 concurrent active users without queuing read requests. |
 | `PERF-008` | The platform **MUST** support 100 concurrent streaming executions without dropping output. |
 | `PERF-009` | The platform **MUST** apply **incremental updates** where upstream APIs support them — pull only what changed since the last refresh. |
+| `PERF-010` | In multi-node deployments, cache locality across nodes **MUST** be documented. Stateless API and MCP surfaces that route to any node **MUST** either: (a) use a client-affinity mechanism at the load balancer (e.g., keyed on API-token principal) so repeated requests from the same principal warm the same node's cache, or (b) accept reduced cache-hit rates proportional to the node count and document this explicitly. Live-updating LiveView connections **MUST** use WebSocket stickiness in all multi-node deployments. |
 
 ## 11.9 Caching strategy
 
@@ -329,6 +355,8 @@ The journal is the per-node history of significant events. The global timeline i
 | `CACHE-006` | Cache keys **MUST** be scoped to the integration, capability, and (where applicable) the requesting user's permission scope — to avoid leaking permission-restricted data across users. |
 | `CACHE-007` | The platform **MUST NOT** cache write-side responses (executions, provisioning actions) beyond the duration of the in-flight request. |
 | `CACHE-008` | The cache **MUST** have a configurable size budget per integration and **MUST** apply a documented eviction policy when the budget is exceeded. |
+| `CACHE-009` | The platform **MUST** warm high-priority caches in the background after startup so users **MUST NOT** routinely experience empty-cache latency in the minutes following a deploy. Warming **MUST** be prioritised by data type (inventory first, facts next) and **MUST NOT** monopolise per-integration concurrency budgets used by user-initiated requests. The set of capabilities warmed at startup, and their priorities, **MUST** be configurable per integration. |
+| `CACHE-010` | The platform **MUST NOT** depend on snapshotting cache state to persistent storage to survive restarts. Cold-start warming from the source tool is the canonical recovery path; persistent cache snapshots, if implemented, are an optimisation only. |
 
 ## 11.10 Configuration
 

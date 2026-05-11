@@ -195,41 +195,24 @@ The roadmap is sequence-prescriptive but not date-prescriptive. The order matter
 
 **Required tests:** End-to-end provisioning flow; cross-account scenarios; tag-scoped RBAC; CloudTrail correlation.
 
-## 20.13 Feature Set 12 — External Authentication
+## 20.13 Feature Set 12 — MCP Server
 
-**Scope:** SAML, OIDC, LDAP integration with group-to-role mapping.
-
-**Acceptance criteria:**
-
-- [ ] Users can authenticate via at least one IdP per protocol (SAML, OIDC, LDAP).
-- [ ] JIT provisioning creates a user record on first login.
-- [ ] Group-to-role mappings (including wildcard patterns) correctly assign permissions.
-- [ ] Default role for unmapped users works (configurable to "deny access").
-- [ ] Local users continue to work alongside external auth.
-- [ ] Multiple IdPs can be configured concurrently.
-- [ ] Group membership re-evaluation on login propagates changes.
-- [ ] Break-glass local access works when the IdP is unavailable.
-
-**Required tests:** End-to-end SAML / OIDC / LDAP flows; group-to-role mapping property tests; multi-IdP coexistence.
-
-## 20.14 Feature Set 13 — MCP Server
-
-**Scope:** Read-only MCP tools for AI agents.
+**Scope:** Read-only MCP tools for AI agents. CE feature.
 
 **Acceptance criteria:**
 
 - [ ] MCP server exposes the initial tool catalog ([section 17.1.5](17-ai-features.md#1715-tool-catalog-initial-set)).
 - [ ] Tool responses are structured, paginated, and token-efficient.
 - [ ] RBAC is enforced on MCP tool access — same model as the web UI.
-- [ ] Per-principal rate limiting works.
+- [ ] Per-principal rate limiting works (per-node enforcement is acceptable and documented).
 - [ ] Tools don't flood upstream APIs (caching works correctly).
 - [ ] An external MCP-capable client can discover and invoke the tools.
 
 **Required tests:** Tool response shape correctness; RBAC enforcement at the MCP surface; rate limit behavior; cache scope per principal.
 
-## 20.15 Feature Set 14 — AI-Assisted Inference
+## 20.14 Feature Set 13 — AI-Assisted Inference
 
-**Scope:** Contextual analysis buttons, AI-generated reports.
+**Scope:** Contextual analysis buttons, AI-generated reports. CE feature.
 
 **Acceptance criteria:**
 
@@ -237,13 +220,49 @@ The roadmap is sequence-prescriptive but not date-prescriptive. The order matter
 - [ ] Contextual analysis features ([section 17.2.3](17-ai-features.md#1723-feature-set-initial)) work end-to-end.
 - [ ] AI features are gracefully absent when no LLM key is configured.
 - [ ] All AI inputs respect RBAC — no data leakage across users or beyond the requester's scope.
-- [ ] Secrets are redacted from prompts.
+- [ ] Secret redaction uses structured annotation first; regex backstops cover documented patterns.
 - [ ] Per-feature disable and global disable both work.
 - [ ] Token usage is reported per invocation.
 
-**Required tests:** RBAC scoping in prompt construction; secret redaction correctness; gracefully-absent state.
+**Required tests:** RBAC scoping in prompt construction; structured redaction correctness; regex backstop coverage; gracefully-absent state.
 
-## 20.16 Cross-cutting work
+## 20.15 Feature Set 14 — OIDC Authentication (CE)
+
+**Scope:** Single-IdP OIDC authentication for the Community Edition. Covers the self-hosted team case (Google Workspace, GitHub, Keycloak, Azure AD via OIDC). Deliberately does not include SAML, LDAP, multi-IdP, or wildcard group patterns — those are EE capabilities (FS EE-1).
+
+**Acceptance criteria:**
+
+- [ ] A single OIDC provider can be configured via the admin UI.
+- [ ] Users can authenticate via the configured OIDC provider.
+- [ ] JIT provisioning creates a user record on first successful OIDC login.
+- [ ] Literal (exact-match) group-to-role mappings correctly assign permissions on login and on administrator-triggered "refresh user."
+- [ ] Default role for unmapped users works (configurable to "deny access").
+- [ ] Local users continue to work alongside OIDC (`AUTH-055`).
+- [ ] Break-glass local access works when the OIDC provider is unavailable.
+- [ ] Attempting to configure a second OIDC provider in CE is rejected with a clear "EE feature" message (or the UI hides the option).
+
+**Required tests:** End-to-end OIDC login flow; literal group-to-role mapping correctness; OIDC outage + local auth continuity; rejection of multi-IdP configuration.
+
+## 20.16 Phase 2 — Enterprise Edition
+
+Phase 2 delivers EE features in priority order. Each feature set ships as an incremental enterprise release; CE continues to receive bug fixes and new integration plugins independently.
+
+| Feature Set | Scope |
+|-------------|-------|
+| **FS EE-1** — Enterprise External Authentication | SAML 2.0; LDAP/AD bind + search; multi-IdP OIDC coexistence; group-to-role wildcard patterns; IdP group re-evaluation on every login with additive multi-group resolution; local-auth disable capability |
+| **FS EE-2** — High Availability | libcluster; distributed PubSub; session affinity; zero-downtime deploys |
+| **FS EE-3** — Approval Workflows | Action queuing; multi-approver; expiry; approval audit |
+| **FS EE-4** — Advanced Audit & Compliance | SIEM export (JSON/CEF); scheduled export; tamper-evident signatures |
+| **FS EE-5** — Scheduled Executions | Cron scheduling; schedule history; RBAC-at-execution-time; overlap prevention |
+| **FS EE-6** — Outbound Webhooks | Event-driven delivery; retry/backoff; signed payloads |
+| **FS EE-7** — Custom Dashboards | Widget catalog; shareable dashboards; per-dashboard access control |
+| **FS EE-8** — Multi-tenancy | Tenant isolation; per-tenant config; MSP mode |
+
+**EE phase gate (per feature set):** Each EE feature set ships when its acceptance criteria pass and the license enforcement integration is validated. EE releases are independent of CE releases — CE does not block on EE delivery.
+
+See [`docs/specs/editions.md`](../editions.md) for the full CE/EE commercial and architectural rationale.
+
+## 20.17 Cross-cutting work
 
 The roadmap above describes *feature sets*. The following cross-cutting concerns **MUST** be addressed in parallel and **MUST NOT** be deferred to a later phase:
 
@@ -252,43 +271,38 @@ The roadmap above describes *feature sets*. The following cross-cutting concerns
 | `ROAD-101` | Performance testing at the 10,000-node target **MUST** begin from Feature Set 4 onward, validating the platform at scale as integrations are added. |
 | `ROAD-102` | Resilience testing (circuit breaker behavior, timeout enforcement, plugin isolation) **MUST** be exercised from Feature Set 4 onward. |
 | `ROAD-103` | The integration status dashboard **MUST** be functional from Feature Set 4 — administrators need to see what's healthy as they configure integrations. |
-| `ROAD-104` | The audit trail **MUST** be functional from Feature Set 3 — every subsequent feature set adds to the audit surface, not the audit foundation. |
+| `ROAD-104` | The audit trail **MUST** be functional from Feature Set 3 — every subsequent feature set adds to the audit surface, not the audit foundation. The audit-first ordering requirement (`RBAC-305`) **MUST** be implemented in FS 3, before any feature set introduces irreversible side effects (first occurrence: FS 2 SSH execution — which therefore inherits an audit-ordering dependency on FS 3 RBAC infrastructure; executions in FS 2 record to a minimal local audit log until FS 3 lands). |
 | `ROAD-105` | The contract conformance test suite **MUST** evolve in step with the contract — every contract change is paired with conformance updates. |
+| `ROAD-106` | Cold-start cache warming (`CACHE-009`) **MUST** be implemented no later than Feature Set 4, the first feature set exposing minutes-scale TTLs that make cold starts user-visible. |
+| `ROAD-107` | The in-flight execution durability requirement (`EXEC-106`) **MUST** be implemented no later than Feature Set 5, the first feature set introducing long-running executions. Feature Set 2 SSH execution operates under a documented known limitation (output lost on restart) until FS 5. |
 
-## 20.17 Acceptance gates per phase
+## 20.18 Acceptance gates per phase
 
 The following milestones gate phase completion:
 
-### 20.17.1 Phase 1 complete
+### 20.18.1 Phase 1 complete (CE)
 
-Feature Sets 1 through 8 complete + cross-cutting concerns tracked. The system can:
+Feature Sets 1 through 14 complete + cross-cutting concerns tracked. The system can:
 - Manage SSH, Bolt, Ansible, and Puppet inventories with full unified-inventory linking
 - Execute commands across all three execution integrations with streaming output
 - Read full Puppet depth: facts, configuration (Hiera, catalogs, environments), events, reports
-- Maintain a node journal with manual notes
-- Authenticate users locally with full RBAC including granular permissions
-- Survive integration failures with graceful degradation and circuit breakers
-- Operate at 10,000 nodes within performance targets
-
-### 20.17.2 Phase 1b complete
-
-Feature Sets 9 through 11 complete. The system can:
 - Provision Proxmox VMs / containers, AWS EC2 instances, Azure VMs
-- Show fully unified inventory across all P1 + P1b sources
-- Populate journals from upstream lifecycle event logs in real time
-
-### 20.17.3 Phase 2 complete
-
-Feature Sets 12 through 14 complete. The system can:
-- Authenticate via SAML / OIDC / LDAP with group-to-role mapping
-- Expose MCP tools to external AI agents
+- Maintain a node journal with manual notes
+- Authenticate users locally or via a single OIDC provider with full RBAC including granular permissions and literal group-to-role mapping
+- Expose MCP tools to external AI agents with per-principal rate limiting
 - Provide embedded AI-assisted inference with bring-your-own-keys
+- Survive integration failures with graceful degradation and circuit breakers
+- Operate at 10,000 nodes within performance targets on a single node
 
-### 20.17.4 Phase 2 partial — additional Priority 2 integrations
+### 20.18.2 Phase 2 — Enterprise Edition
 
-Priority 2 integration plugins (per [section 10.2](10-priority-2-3-integrations.md#102-priority-2--notes-per-integration)) **MAY** be implemented in any order after the platform reaches Phase 1b complete. Each plugin **MUST** ship through its own feature set with acceptance criteria specific to that plugin.
+Feature Sets EE-1 through EE-8 deliver enterprise features as an independent stream. Each feature set is independently releasable and gated by its own acceptance criteria.
 
-## 20.18 Prioritization decisions worth noting
+### 20.18.3 Phase 2 partial — additional Priority 2 integrations
+
+Priority 2 integration plugins (per [section 10.2](10-priority-2-3-integrations.md#102-priority-2--notes-per-integration)) **MAY** be implemented in any order after Phase 1 CE completion. Each plugin **MUST** ship through its own feature set with acceptance criteria specific to that plugin. Priority 2 integrations are CE unless the individual plugin's capability is identified as governance/enterprise in nature and explicitly marked for EE in a future scope amendment.
+
+## 20.19 Prioritization decisions worth noting
 
 A few non-obvious sequencing choices in the roadmap above:
 
@@ -297,8 +311,8 @@ A few non-obvious sequencing choices in the roadmap above:
 - **Bolt before deep Puppet (FS 5 vs FS 6)** — Bolt is small and validates the *execution* side of the plugin contract before the heavier Puppet feature set lands.
 - **Ansible after deep Puppet (FS 7 vs FS 6)** — Validates the plugin contract's generality across two execution integrations and one deep configuration integration.
 - **Journal before unified inventory (FS 8 vs FS 9)** — Journal mechanics are simpler and validate event extraction before the more delicate linking work.
-- **External auth deferred to Phase 2 (FS 12)** — Local auth + RBAC is sufficient for Phase 1 deployments. External auth is critical for enterprise but is non-blocking for proving the platform.
-- **MCP and AI in Phase 2 (FS 13–14)** — These features depend on a stable, well-shaped data model. Building them earlier would couple them to a moving target.
+- **OIDC in Phase 1 (FS 14), SAML/LDAP in Phase 2 (FS EE-1)** — Generic single-IdP OIDC is cheap to implement and essential for small-team adoption. SAML and LDAP carry substantially more operational surface (metadata exchange, certificate rotation, directory bind semantics) that small teams do not need and that is properly priced as an enterprise feature.
+- **MCP and AI in Phase 1 (FS 12–13)** — Pulled forward from the original roadmap because these features are core differentiators for the AI-native tooling wave. They depend on a stable data model (delivered by FS 8–9) so they land after, not before, the unified inventory and journal are complete.
 
 ---
 

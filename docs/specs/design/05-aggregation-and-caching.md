@@ -327,6 +327,9 @@ A per-integration `Health` worker runs probes at the configured interval (`HEALT
 
 Probes are intentionally lightweight (`HEALTH-003`, `PLUG-113`): token-validate, single-row queries, small discovery calls. Not full data fetches.
 
+> **Decision: The per-integration GenServer health worker is the canonical liveness probe mechanism. Oban is used for maintenance tasks only.**
+> `HEALTH-005` requires a single owner for continuous per-integration probing. The per-integration `Health` GenServer is that owner — it holds the tick timer, the ring-buffer history, and the per-capability probe logic. The Oban `maintenance` queue (noted in design/02 §2.3 and design/12 §12.2) is reserved for lower-frequency work with retention, recomputation, or snapshot semantics (e.g., 24h-scale cache cleanup, weekly retention enforcement, cold-start warmer bootstrap). Oban **MUST NOT** schedule health-probe jobs of the same cadence as the GenServer ticker — that would produce double-firing against integrations already under health-probe load. The `maintenance` queue's minimum frequency for any job is `60s`, and no maintenance job's purpose overlaps with live health probing.
+
 ### 5.6.1 Flapping detection
 
 Health history is kept in a ring buffer (last N samples, configurable). If the status oscillates between `:healthy` and `:unhealthy` too often, a flapping flag is raised in the status dashboard (`HEALTH-104`, `PLUG-114`).
@@ -404,7 +407,127 @@ Dashboards built from these events answer: which source is the slowest? Which in
 | Request deduplication (`PERF-004`, `PUP-1004`) | Request coalescer in the dispatcher |
 | Incremental updates (`PERF-009`, `STR-502`) | Plugin supports change-feed queries; dispatcher passes checkpoint |
 
-Scale-out (multi-node) uses `libcluster` + `Phoenix.PubSub.PG` adapter for inter-node message fan-out. PostgreSQL and Oban are shared.
+Scale-out (multi-node) uses `libcluster` + `Phoenix.PubSub.PG` adapter for inter-node message fan-out. PostgreSQL and Oban are shared. HA — the libcluster integration itself, distributed PubSub beyond in-node, and session affinity — is delivered by `vigil_enterprise` (FS EE-2); CE ships the single-node topology.
+
+## 5.10 Cold-start cache warming
+
+`CACHE-009` requires that the platform warm high-priority caches after startup so users don't hit empty-cache latency after every deploy. The justification: `PUP-1001` sets a 15-minute inventory TTL; a naive cold start leaves the inventory page slow for the full TTL as each capability misses and back-pressures PuppetDB.
+
+### 5.10.1 Warming trigger
+
+On application startup, after all integrations have completed their first health probe, `Vigil.Core.Cache.Warmer` inspects each integration's `warm_on_boot` configuration and enqueues one Oban job per `{integration_id, capability}` into the `maintenance` queue. Oban's SKIP LOCKED ensures each job runs exactly once across a cluster.
+
+```elixir
+defmodule Vigil.Core.Cache.Warmer do
+  use GenServer
+
+  def init(_) do
+    Phoenix.PubSub.subscribe(Vigil.PubSub, "integration_health:all")
+    # Delay first pass until all integrations have reported at least once
+    Process.send_after(self(), :first_warm_pass, 10_000)
+    {:ok, %{warmed: MapSet.new()}}
+  end
+
+  def handle_info(:first_warm_pass, state) do
+    for int <- healthy_integrations() do
+      enqueue_warm_jobs(int)
+    end
+    {:noreply, %{state | warmed: MapSet.new(Enum.map(healthy_integrations(), & &1.id))}}
+  end
+
+  def handle_info({:health, int_id, :healthy, _caps, _diag}, state) do
+    # Warm a newly-healthy integration that wasn't warmed on boot
+    unless MapSet.member?(state.warmed, int_id) do
+      enqueue_warm_jobs(int_id)
+    end
+    {:noreply, %{state | warmed: MapSet.put(state.warmed, int_id)}}
+  end
+
+  defp enqueue_warm_jobs(int) do
+    for cap <- warmable_capabilities(int), into: [] do
+      %{integration_id: int.id, capability: cap}
+      |> Vigil.Oban.Workers.CacheWarmer.new(priority: warm_priority(cap),
+                                             queue: :maintenance)
+      |> Oban.insert()
+    end
+  end
+
+  defp warm_priority(:inventory), do: 0      # highest
+  defp warm_priority(:facts),     do: 1
+  defp warm_priority(:reports),   do: 2
+  defp warm_priority(_),          do: 3
+end
+```
+
+### 5.10.2 Warmer worker
+
+The worker runs inside the per-integration concurrency budget (not outside it) so background warming does not exhaust the budget that real user requests need:
+
+```elixir
+defmodule Vigil.Oban.Workers.CacheWarmer do
+  use Oban.Worker, queue: :maintenance, max_attempts: 3
+
+  @impl Oban.Worker
+  def perform(%Oban.Job{args: %{"integration_id" => int_id, "capability" => cap}}) do
+    # Respect the integration's concurrency limit. Warmer jobs yield to
+    # user-initiated calls by taking a lower slot allocation.
+    Vigil.Plugin.Dispatcher.warm(int_id, String.to_existing_atom(cap),
+                                 max_concurrency_share: 0.5)
+  end
+end
+```
+
+`Dispatcher.warm/3` issues the same capability call a user would issue, but:
+
+- Reserves at most half the integration's concurrency budget for warm jobs (`max_concurrency_share`). Real user requests continue to flow.
+- Skips the request coalescer — warm calls do not "steal" a cache entry from a concurrent user request; they fill the cache fresh.
+- Tags the telemetry span with `source: :warmer` so metrics can distinguish warm-up traffic from user traffic.
+
+### 5.10.3 What gets warmed
+
+Configurable per integration via `warm_on_boot: [:inventory, :facts]` (the default). Other capabilities are not warmed — the first user access pays cache-miss latency. Large facts sweeps would be disproportionate to their value; warming is deliberately conservative.
+
+For facts specifically, warming fetches only the top-level node list with compact metadata — not full per-node fact payloads. Full facts warm lazily on first node-detail view.
+
+### 5.10.4 Why not snapshot-to-disk
+
+An alternative approach — persist cache state to PostgreSQL on graceful shutdown, restore on boot — was considered and rejected:
+
+- Snapshot staleness across a long outage creates confidence-in-cache problems that the freshness tags already solve poorly.
+- Restore timing (at startup) races with integration health probes; serving cached data before the first probe is misleading.
+- Warming from the source tool is the canonical recovery path (`CACHE-010`); snapshots would be an optimisation layer over that, not a replacement.
+
+Warming jobs typically complete in well under the TTL window. At 10,000 PuppetDB nodes and a healthy PuppetDB, inventory warm-up takes ~1 second. The "slow deploy" window becomes negligible.
+
+## 5.11 Multi-node cache locality
+
+`PERF-010` acknowledges that ETS caches are per-node in multi-node deployments. This has different implications per surface:
+
+### 5.11.1 LiveView (solved by stickiness)
+
+Phoenix LiveView holds a long-lived WebSocket. In a multi-node deployment, the load balancer must be configured with WebSocket stickiness (keyed on the session cookie) so each client's LiveView process stays on one node for the connection duration. This is the standard Phoenix deployment guidance and is already noted in [§12](12-deployment-and-ops.md). Cache locality follows naturally: a user's repeat queries all land on one node's ETS, giving the expected hit rate.
+
+### 5.11.2 REST / MCP API (documented tradeoff)
+
+The REST API and MCP endpoint are stateless HTTP. A client's repeated requests may route to any node. With N nodes and per-node ETS caches, the effective cache hit rate for a given principal degrades roughly as `1/N` compared to a single-node deployment — the principal's first request warms node A's cache; the second request lands on node B and misses; and so on.
+
+For the 5-user target scale on a single node (the default deployment), this is moot. For multi-node deployments (an EE feature via FS EE-2), two options:
+
+1. **Load-balancer affinity on principal identity.** Configure the load balancer to hash on the `Authorization: Bearer <token>` header so each API principal's requests route to the same node. This is straightforward in most load balancers (HAProxy `balance hdr(Authorization)`, nginx `ip_hash`-equivalent on a custom variable, AWS ALB target-group stickiness).
+   - Pro: preserves single-node cache hit rates for the most common case (an AI agent issuing many queries against the MCP endpoint).
+   - Con: requires load-balancer configuration, which is outside Vigil's control. Vigil documents the recommendation; operators implement it.
+
+2. **Accept reduced hit rates.** For small clusters (2-3 nodes) and mostly-unique-principal workloads, the effective hit rate is still high enough for the 2-second page-load target. Cache locality loss is offset by distributed request handling.
+
+The platform does **not** ship an inter-node cache (e.g., Redis, distributed ETS replication). This is deliberate:
+
+- PostgreSQL-only is the stated stack principle.
+- Introducing a distributed cache adds operational overhead disproportionate to the UX win at the target scale.
+- EE FS EE-2 (HA) delivers libcluster and distributed PubSub; adding distributed cache state on top is a further scope expansion not currently justified.
+
+### 5.11.3 Documentation obligation
+
+The operations guide (design/12 §12.6) documents the multi-node cache behaviour and the affinity recommendation explicitly. CE's single-node default sidesteps the concern entirely.
 
 ---
 

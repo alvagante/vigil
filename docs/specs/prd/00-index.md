@@ -12,6 +12,8 @@ This document defines the requirements for **Vigil**, a web-based command-and-co
 
 The document is **implementation-agnostic**. It does not prescribe a programming language, framework, persistence engine, transport protocol, or runtime topology. Where behavior depends on a technical choice, the requirement names the behavior, not the choice.
 
+The product is delivered in two editions — **Community Edition (CE, AGPL v3)** and **Enterprise Edition (EE, commercial)**. Requirements in this document are CE unless explicitly marked **(EE)** or noted as an EE feature inline. The commercial and architectural rationale for the edition split lives in [`docs/specs/editions.md`](../editions.md); that document is normative for edition placement.
+
 Requirements use RFC 2119 keywords (**MUST**, **SHOULD**, **MAY**, **MUST NOT**, **SHOULD NOT**). Each normative requirement carries a unique identifier of the form `PREFIX-NNN` (e.g., `INV-001`, `PUP-014`) for traceability across implementation, tests, and documentation.
 
 ---
@@ -42,7 +44,7 @@ The chapters below are ordered for cover-to-cover reading. They may also be cons
 | 18 | [18-ui-requirements.md](18-ui-requirements.md) | Information architecture, node detail page, UI driven by enabled integrations |
 | 19 | [19-non-functional-requirements.md](19-non-functional-requirements.md) | Performance, security, reliability, extensibility, caching |
 | 20 | [20-implementation-roadmap.md](20-implementation-roadmap.md) | Ordered feature sets with acceptance criteria |
-| 21 | [21-future-considerations.md](21-future-considerations.md) | CLI tool, scheduled executions, custom dashboards |
+| 21 | [21-future-considerations.md](21-future-considerations.md) | CLI tool, pointers to items moved into EE, drift detection, public views, mobile companion |
 
 ---
 
@@ -96,3 +98,4 @@ Identifiers are stable. Once assigned, an ID is not reused even if its requireme
 - "**The user**" refers to a person interacting with the system through its web interface, API, MCP server, or future CLI.
 - "**The administrator**" is a user with elevated privileges to configure the system, integrations, users, and roles.
 - A requirement that names a specific integration applies only to that integration; cross-cutting requirements use generic terms.
+- Requirements marked **(EE)** are provided by the Enterprise Edition (`vigil_enterprise`). A CE-only deployment **MUST NOT** be expected to satisfy them. See [`editions.md`](../editions.md) for placement rationale.

@@ -402,7 +402,61 @@ PRD `PLUG-401` through `PLUG-406` mandate isolation. Elixir/OTP provides more th
 - **No privileged access by first-party plugins (`PLUG-307`).** First-party plugin code paths pass through the same dispatcher, same RBAC, same budget checks as community plugins. No first-party bypass.
 - **No `Process.whereis` or direct PID resolution across plugins.** Plugins route through the Registry. This makes it easy to audit and to test with fakes.
 
-## 3.9 Versioning and compatibility
+## 3.9 Plugin trust model — explicit statement
+
+PRD `PLUG-407`, `PLUG-408`, `PLUG-409` require an explicit statement of what isolation the platform does and does not provide. This section is that statement.
+
+> **Decision: Plugins are trusted at the same level as platform code.**
+> In-process plugin execution is an explicit engineering choice (`PLUG-405`) made for performance. It trades data isolation for operational simplicity. The platform provides **fault isolation** (supervision), **resource isolation** (per-plugin budgets), and **API isolation** (the plugin contract) — but it does **not** provide data isolation. An installed plugin runs in the same BEAM memory space as `Vigil.Core` and can, absent additional controls,:
+>
+> - Read any named ETS table via `:ets.tab2list/1`
+> - Subscribe to any `Phoenix.PubSub` topic including internal health events
+> - Call `Vigil.Core.Secrets` module functions if it knows the name
+> - Inspect any GenServer state via `:sys.get_state/1`
+> - Call private-by-convention module functions via `apply/3`
+>
+> For first-party plugins (Puppet, Bolt, Ansible, SSH, Proxmox, AWS, Azure), which the core team maintains and reviews, this is acceptable. For community plugins, the installation decision is a security decision equivalent to installing untrusted code on the host system. Operators **MUST** vet community plugins as they would any other system-level dependency.
+
+### 3.9.1 What the platform can and does enforce
+
+Even within the in-process model, the platform enforces what it reasonably can:
+
+| Defence | Mechanism | What it prevents |
+|---------|-----------|-----------------|
+| Named ETS tables with `:protected` access mode | Cache tables owned by `Vigil.Core.Cache` are created with `access: :protected`. Reads require the owner's permission. | Casual reads from plugin processes |
+| Scoped PubSub topic prefixes | Plugins subscribe to their own `integration:<id>:*` topics. Subscribing to `rbac:*` or `audit:*` topics yields no messages because publishers scope explicitly. | Passive snooping of internal events |
+| Hidden registry keys | Internal GenServers are registered under `{:internal, ...}` keys. The plugin API exposes only plugin-relevant entries. | Direct PID resolution of internal services |
+| Module boundary conformance test | The conformance suite statically scans plugin code for calls to `Vigil.Core.*` internals (not `Vigil.Plugin.*`) and flags them as contract violations. | Shortcut coupling at build time, before deploy |
+| Logger filter for secret metadata | Log entries from plugin modules are passed through a filter that redacts known-secret keys. | Accidental secret leakage into logs from a careless plugin |
+
+These are **defences in depth**, not a trust boundary. A malicious or compromised plugin that attempted to bypass them (directly calling `:ets.tab2list/1` with the raw atom, subscribing to a discovered topic name, using `:sys.get_state/1`) would succeed. The platform does not claim otherwise.
+
+### 3.9.2 What we do not do
+
+We do not:
+
+- Run plugins in separate OS processes (would require IPC, serialization overhead, defeats the performance rationale for in-process)
+- Run plugins in sandboxed BEAM nodes with restricted module sets (BEAM does not offer this primitive)
+- Ship a "trusted plugin" vs. "untrusted plugin" mode (would create a two-tier contract that the PRD explicitly forbids — `PLUG-307`, `NFR-705`)
+
+### 3.9.3 Path to stronger isolation
+
+If untrusted plugins ever enter scope — which would be a deliberate scope amendment — two escalation paths remain available without redesigning the plugin contract:
+
+1. **Per-plugin OS process.** Plugin runs as a separate BEAM node connected via Distributed Erlang, or as a non-BEAM subprocess invoked via Port with a message-protocol shim. The existing `Vigil.Plugin.Dispatcher` becomes the RPC boundary. This was explicitly preserved by `PLUG-405` ("process-level isolation is not required for the initial release but MUST NOT be precluded by the contract design").
+2. **Capability-based access control within the BEAM.** Adopt per-process capabilities for ETS / PubSub access using the BEAM's `access` mode flags and registry permissions, plus a runtime policy enforcer that intercepts module calls. More invasive; less proven in production Elixir.
+
+Neither is committed work. The statement here is that the contract, not the runtime implementation, is what community plugins target — so either escalation is available later without breaking the ecosystem.
+
+### 3.9.4 Operator-facing documentation
+
+The plugin installation UI and operator documentation **MUST** state the trust model plainly:
+
+> Vigil plugins run in the same process as the platform. Installing a plugin is a security decision equivalent to installing any other application dependency. Vet community plugins as you would any other system-level software.
+
+This is the honest version of the trust model. It is also the minimum that lets operators make an informed decision.
+
+## 3.10 Versioning and compatibility
 
 `PLUG-601` through `PLUG-603`: the plugin contract is versioned as a semantic version, exposed as `Vigil.Plugin.contract_version/0`. The platform supports the current and previous major version concurrently.
 

@@ -38,7 +38,7 @@ The MCP (Model Context Protocol) server exposes well-shaped, read-only infrastru
 | ID | Requirement |
 |----|-------------|
 | `MCP-201` | MCP tool responses **MUST** be cacheable and efficient. AI agents will issue many queries; the platform **MUST NOT** flood upstream APIs as a result. |
-| `MCP-202` | The MCP server **MUST** apply per-principal rate limiting to prevent runaway AI loops from overwhelming the platform. |
+| `MCP-202` | The MCP server **MUST** apply per-principal rate limiting to prevent runaway AI loops from overwhelming the platform. In multi-node deployments, rate limits **MAY** be enforced per-node rather than globally; the platform **MUST** document the enforcement scope so operators can size limits appropriately. Cluster-wide enforcement **MAY** be provided via a coordinated backend and **MUST NOT** be represented as the default. |
 | `MCP-203` | Cache scope for MCP tool responses **MUST** be tied to the requesting principal's permission scope — an AI agent's query **MUST NOT** receive cached responses computed for a higher-permissioned user. |
 
 ### 17.1.4 Authentication and authorization
@@ -134,7 +134,7 @@ The initial embedded AI features **MUST** include at minimum:
 |----|-------------|
 | `AI-301` | All AI inputs **MUST** be constructed from data the requesting user already has permission to see. The platform **MUST NOT** broaden the user's view by routing through AI. |
 | `AI-302` | The platform **MUST NOT** include other users' private data, RBAC-restricted data, or system secrets in any prompt. |
-| `AI-303` | The platform **MUST** redact obvious sensitive substrings (tokens, keys, passwords) from AI inputs even when they appear in journal entries or fact values. |
+| `AI-303` | Secret redaction **MUST** use structured annotation as the primary mechanism: fields declared `secret?: true` in a plugin's configuration schema or data model **MUST** be masked before any AI prompt is constructed, regardless of whether they appear in canonical key paths or unexpected contexts (nested payloads, free-form fact values, execution transcripts). Pattern-based (regex) redaction is a **backstop only** — applied to opaque string values from sources that lack structural secret marking, to catch known secret shapes (PEM blocks, cloud-provider access-key prefixes, JWT-like tokens, API-key prefixes). The platform **MUST NOT** rely on regex as the primary filter. The set of regex backstops **MUST** be configurable and **MUST** cover at minimum AWS, GCP, Azure, and generic bearer-token patterns. |
 | `AI-304` | The platform **MUST NOT** persist AI-generated output as authoritative data. AI output is presentation, not source of truth. |
 | `AI-305` | AI feature usage **MUST** be auditable — an audit trail entry records the user, feature, and timestamp (but not the full prompt content unless administrator opts in to detailed logging). |
 

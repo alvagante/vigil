@@ -5,11 +5,14 @@ This section specifies the OTP supervision tree: how processes are organized, wh
 ## 2.1 Umbrella layout
 
 ```
-vigil/                                # umbrella root
+vigil/                                # umbrella root (CE, AGPL v3)
 ├── apps/
 │   ├── vigil_core/                   # domain logic, Ecto, PubSub topics
 │   ├── vigil_plugin/                 # plugin contract, dispatcher, conformance
 │   ├── vigil_web/                    # Phoenix, LiveView, API, MCP HTTP
+│   ├── vigil_auth_oidc/              # CE OIDC provider (single-IdP, literal
+│   │                                 #   group-to-role mapping). Implements
+│   │                                 #   the Vigil.Auth.Provider behaviour.
 │   ├── vigil_integrations_puppet/
 │   ├── vigil_integrations_bolt/
 │   ├── vigil_integrations_ansible/
@@ -29,6 +32,8 @@ vigil/                                # umbrella root
 ```
 
 Each umbrella child has its own `mix.exs`, its own `application/0`, and its own dependencies. The root `mix.exs` declares no runtime dependencies beyond the umbrella children.
+
+Enterprise Edition apps (`vigil_auth_saml`, `vigil_auth_ldap`, `vigil_auth_enterprise`, `vigil_enterprise_*`) live in a separate private umbrella and are **not** present in this repository. They register into CE's extension points (`Vigil.Auth.Provider`, `Vigil.Audit.Exporter`, `Vigil.Cluster.Backend`, etc.) at runtime when the `vigil_enterprise` OTP app is loaded alongside CE. See [`docs/specs/editions.md`](../editions.md) §4 for the full EE app inventory and license-validation approach.
 
 ## 2.2 Top-level supervision tree
 

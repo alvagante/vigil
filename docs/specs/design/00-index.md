@@ -15,6 +15,8 @@ It is opinionated. It commits to specific libraries, process topologies, data mo
 
 It is not a product decision. The PRD remains implementation-agnostic. Any future reimplementation in a different stack would produce a different design document.
 
+The product is delivered in two editions — **Community Edition (CE, AGPL v3)** and **Enterprise Edition (EE, commercial)**. Unless marked otherwise, all sections describe CE. EE features are delivered by a separate `vigil_enterprise` umbrella via the extension behaviours CE defines. Where an edition boundary affects the design, it is called out with an **Edition boundary** block. The commercial and architectural rationale for the split lives in [`editions.md`](../editions.md).
+
 ---
 
 ## Why Elixir / Phoenix LiveView

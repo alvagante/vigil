@@ -307,16 +307,53 @@ This pattern keeps rolling deployments safe. CI enforces it with a migration dif
 
 ## 12.6 Horizontal scaling
 
-Single-node handles the target scale comfortably. When scaling out:
+Single-node handles the target scale comfortably. Multi-node deployment is an Enterprise Edition capability delivered by FS EE-2 (HA): libcluster, distributed PubSub, session affinity. CE ships single-node-only — a CE deployment attempting to start with `CLUSTER_ENABLED=true` logs a clear "requires EE" error and continues as single-node.
+
+When scaling out in EE:
 
 - **Stateless by design.** Phoenix endpoints are stateless. Sessions are DB-backed.
-- **Sticky WebSockets:** LiveView uses WebSocket; a stickiness cookie at the load balancer keeps a client on the same node for the duration of the connection.
-- **PubSub fan-out:** `Phoenix.PubSub` with `:pg` adapter distributes messages across nodes.
+- **Sticky WebSockets.** LiveView uses WebSocket; a stickiness cookie at the load balancer keeps a client on the same node for the duration of the connection. Required for every multi-node deployment.
+- **Recommended API-token affinity.** REST and MCP endpoints are stateless HTTP. For clients making repeated requests with the same API token, hashing on the `Authorization` header at the load balancer preserves per-node ETS cache hit rates (see design/05 §5.11.2). This is a recommendation, not a hard requirement: without it, cache effectiveness degrades roughly as `1/N` per principal across N nodes, which may be acceptable depending on workload.
+- **Per-node rate limiting scope.** MCP and other rate limits are enforced per-node (see design/10 §10.1.7). When sizing limits in multi-node deployments, set per-node limits to `expected_global / node_count`.
+- **PubSub fan-out.** `Phoenix.PubSub` with `:pg` adapter distributes messages across nodes.
 - **PostgreSQL:** shared.
 - **Oban:** jobs distribute across nodes; each node processes any queue it's configured for.
 - **libcluster:** joins nodes into a BEAM cluster via configured strategy (Kubernetes, DNS, gossip).
 
-For very large deployments (tens of thousands of nodes), we can pin integrations to specific BEAM nodes — e.g., the "PuppetDB node" has the Puppet plugin supervisor; the "AWS node" has AWS plugin supervisor. This partitions load naturally.
+For very large deployments (tens of thousands of nodes), integrations can be pinned to specific BEAM nodes — e.g., the "PuppetDB node" has the Puppet plugin supervisor; the "AWS node" has AWS plugin supervisor. This partitions load naturally.
+
+### 12.6.1 Load-balancer configuration reference
+
+Vigil does not ship a load balancer; operators configure their own. The following examples realise the two stickiness recommendations above:
+
+**HAProxy:**
+```
+frontend vigil_ui
+    bind *:443 ssl crt /etc/ssl/vigil.pem
+    acl is_websocket hdr(Upgrade) -i WebSocket
+    acl is_api path_beg /api /mcp
+    use_backend vigil_ws  if is_websocket
+    use_backend vigil_api if is_api
+    default_backend vigil_ui
+
+backend vigil_ws
+    balance source                           # WebSocket stickiness by client IP
+    server node1 10.0.0.1:4000 check
+    server node2 10.0.0.2:4000 check
+
+backend vigil_api
+    balance hdr(Authorization)               # API/MCP stickiness by token
+    hash-type consistent
+    server node1 10.0.0.1:4000 check
+    server node2 10.0.0.2:4000 check
+
+backend vigil_ui
+    balance roundrobin                       # stateless HTML; no stickiness needed
+    server node1 10.0.0.1:4000 check
+    server node2 10.0.0.2:4000 check
+```
+
+**nginx** uses the `sticky` module for cookie-based stickiness and a `hash $http_authorization consistent;` directive for the API/MCP upstream. AWS ALB uses target-group stickiness (duration-based) for UI, and application-defined routing rules for the API — but ALB does not natively hash on request headers. For ALB, either accept reduced cache hit on API/MCP or place the MCP/API on a separate NLB with source-IP affinity as a proxy for principal affinity.
 
 ## 12.7 Operational runbooks
 
@@ -356,12 +393,14 @@ Before a release ships:
 
 Per `NFR-1601`, we document expected resource usage. Ballpark figures for a 10,000-node deployment with Priority 1 + 1b integrations enabled:
 
-- Memory: 1.5–2 GB BEAM heap; ETS caches another 500 MB–1 GB.
-- CPU: 2–4 cores typical; spikes to 8 during catalog compilations or large executions.
-- Network: proportional to upstream call volume; negligible for the platform itself.
-- Disk: depends on execution transcript retention — at 30 days, modest for a typical deployment.
+- **Memory:** 1.5–2 GB BEAM heap; ETS caches another 500 MB–1 GB.
+- **CPU:** 2–4 cores typical. Vigil is primarily I/O bound: it issues HTTP requests to upstream tools, waits on responses, parses JSON, writes to ETS and Postgres. CPU-heavy work occurs in narrow windows — identity linker passes, Hiera usage-analysis reindexes, catalog diff computation, gzip of execution transcripts — and is typically under 1 core per operation. **Vigil does not compile Puppet catalogs**; catalog compilation is a Puppetserver responsibility. A catalog diff from Vigil's perspective is two HTTP calls plus a structural comparison; it costs milliseconds of CPU, not cores. Provision Puppetserver for catalog compilation load separately and do not use Vigil's CPU budget as a proxy.
+- **Network:** proportional to upstream call volume; negligible for the platform itself.
+- **Disk:** depends on execution transcript retention — at 30 days, modest for a typical deployment. Audit retention and checkpoint storage for long-running executions add a linear contribution with user activity.
 
 These numbers are targets for release validation — regressions beyond 50% trigger review.
+
+**Multi-node resource implications.** In a multi-node deployment (FS EE-2), per-node resource usage decreases roughly linearly with node count for stateless workloads. Cache memory usage is duplicated across nodes (each node holds its own ETS cache). Load-balancer stickiness recommendations (see design/05 §5.11.2 and §12.6 below) preserve cache hit rates for API clients.
 
 ## 12.9 Incident handling
 

@@ -122,9 +122,10 @@ The umbrella application is split into these child applications, described fully
 
 | Application | Purpose |
 |-------------|---------|
-| `vigil_core` | Domain logic: inventory, journal, execution, RBAC, audit. Ecto schemas and contexts. No web. No integrations. |
+| `vigil_core` | Domain logic: inventory, journal, execution, RBAC, audit. Ecto schemas and contexts. Defines extension behaviours (`Vigil.Auth.Provider`, `Vigil.Audit.Exporter`, `Vigil.Execution.ApprovalGate`, `Vigil.Cluster.Backend`, `Vigil.Webhook.Dispatcher`, `Vigil.Scheduler.Backend`, `Vigil.Dashboard.Store`, `Vigil.Tenant.Resolver`) with no-op or minimal CE defaults. No web. No integrations. |
 | `vigil_plugin` | Plugin behaviour definitions, dispatch, lifecycle, conformance suite. No specific plugins. |
 | `vigil_web` | Phoenix endpoint, LiveView modules, controllers, API (including MCP). Depends on core + plugin. |
+| `vigil_auth_oidc` | CE OIDC provider (single IdP, literal group-to-role mapping). Implements `Vigil.Auth.Provider`. |
 | `vigil_integrations_puppet` | Puppet plugin. |
 | `vigil_integrations_bolt` | Bolt plugin. |
 | `vigil_integrations_ansible` | Ansible plugin. |
@@ -139,6 +140,8 @@ Each integration is its own OTP application because:
 1. Dependencies are isolated — AWS SDK brings heavy transitive deps the SSH plugin does not need.
 2. Per-plugin enable/disable (`PLUG-206`) is a matter of starting or stopping the child application.
 3. Community plugins follow exactly the same pattern — an OTP application declaring a dependency on `vigil_plugin`.
+
+Enterprise Edition features (SAML, LDAP, multi-IdP OIDC, HA, approvals, SIEM export, scheduled executions, webhooks, custom dashboards, multi-tenancy) live in a separate `vigil_enterprise` umbrella outside this repository. They register into CE's extension points at runtime. CE works fully without EE loaded.
 
 ## 1.6 Cross-cutting principles
 

@@ -6,12 +6,14 @@ This section enumerates the integrations the system targets, organized by priori
 
 Priority levels reflect product order, not architectural distinction. All integrations — regardless of priority — implement the same plugin contract. There is no second-class plugin status.
 
-| Priority | Phase | Description |
-|----------|-------|-------------|
-| **Priority 1 — Core** | Phase 1 | Minimum viable product. Implemented first. Defines the proof of the plugin contract. |
-| **Priority 1b — Core (cloud / hypervisor)** | Phase 1b | Same priority level as core. Implemented after Phase 1 is solid, to keep early focus on the execution and Puppet stack. |
-| **Priority 2 — Next phase** | Phase 2 | Targeted but not blocking initial release. Implemented after Priority 1 has stabilized and the platform contract has been validated. |
-| **Priority 3 — Future / community-driven** | Phase 3+ | Backlog candidates. May be community-contributed. Specified at lower depth. |
+The priority labels are orthogonal to the edition-phase labels in [section 20](20-implementation-roadmap.md): priorities describe *which integrations* ship early; edition phases describe *whether a feature is CE or EE*. All Priority 1 and Priority 1b integrations are CE.
+
+| Priority | Ships in | Description |
+|----------|----------|-------------|
+| **Priority 1 — Core** | CE Phase 1 (FS 2, 4–8) | Minimum viable product. Implemented first. Defines the proof of the plugin contract. |
+| **Priority 1b — Core (cloud / hypervisor)** | CE Phase 1 (FS 10–11) | Same priority level as core. Implemented after the core four are stable, to keep early focus on the execution and Puppet stack. |
+| **Priority 2 — Next phase** | CE (post-Phase 1) | Targeted but not blocking initial release. Implemented after Priority 1 has stabilized and the platform contract has been validated. Unless flagged otherwise, Priority 2 integrations remain CE. |
+| **Priority 3 — Future / community-driven** | CE (backlog) | Backlog candidates. May be community-contributed. Specified at lower depth. |
 
 | ID | Requirement |
 |----|-------------|
