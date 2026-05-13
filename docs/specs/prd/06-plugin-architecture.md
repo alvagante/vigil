@@ -103,13 +103,54 @@ Every plugin **MUST** implement the following hooks. The platform invokes them i
 | `PLUG-408` | Until a process-level plugin isolation model is introduced (out of scope for the initial release), the platform **MUST NOT** represent itself as capable of safely hosting adversarial or untrusted plugins. Community plugins are supported, but the operator is responsible for vetting them before enabling them in production. |
 | `PLUG-409` | Plugins **MUST NOT** access platform-internal storage, caches, message topics, or module APIs outside the published plugin contract. This is a contract obligation on plugin authors (`PLUG-009`, `PLUG-010`) and is verified by the conformance suite where practical; it is not a hard runtime boundary at this release. The platform **SHOULD** enforce what it can (named ETS tables with restricted access modes, scoped PubSub topic prefixes, hidden registries) but **MUST NOT** rely on enforcement as the primary defence — contract adherence is. |
 
-## 6.7 Plugin identity in the data model
+## 6.7 Supplementary capabilities and UI extension slots
+
+Beyond the nine generic integration types, a plugin may declare **supplementary capabilities** — integration-specific features that do not fit the shared abstraction. These are the mechanism by which a plugin exposes rich, tool-native UI and logic without the platform needing prior knowledge of what each integration does.
+
+Examples: Puppet's catalog diff, Hiera key lookup, code analysis; Ansible's variable browser; AWS's resource topology view.
+
+### 6.7.1 Extension slot types
+
+The platform defines three extension slots that supplementary capabilities may occupy:
+
+| Slot | Rendered where | Description |
+|------|---------------|-------------|
+| `node_tab` | Extra tab on the node detail page, appended after generic tabs | Plugin-specific per-node view. Only shown when the plugin reports this node and the user has the required permission. |
+| `global_page` | Sidebar entry under the integration's navigation section | Plugin-specific page with its own URL, accessible from the main navigation. May display cross-node data, plugin-specific node lists with custom columns, or tool-native workflows. |
+| `node_action` | Button or menu item in the node action bar on the node detail page | Plugin-specific action, typically triggering a plugin capability call with output rendered in a dedicated view or panel. |
+
+### 6.7.2 Supplementary capability declaration
+
+| ID | Requirement |
+|----|-------------|
+| `PLUG-801` | A plugin **MAY** declare zero or more supplementary capabilities in its manifest in addition to its generic integration types. |
+| `PLUG-802` | Each supplementary capability declaration **MUST** include: a stable capability identifier (e.g., `puppet:catalog_diff`), a display name, a description, an extension slot type (`node_tab`, `global_page`, or `node_action`), and an RBAC permission identifier. |
+| `PLUG-803` | Each supplementary capability **MUST** declare its data contract: the structure of data the plugin provides for this capability, and any parameters the capability accepts. |
+| `PLUG-804` | Each supplementary capability **MUST** declare a UI component (a platform-native UI module) that renders its data in the assigned slot. First-party and community plugins alike may ship full UI components — this is consistent with the plugin trust model (`PLUG-407`, `PLUG-408`). |
+| `PLUG-805` | The platform **MUST** mount declared supplementary capability components in their assigned slots at runtime. `node_tab` and `node_action` components are mounted only when the plugin is linked to the node being viewed. `global_page` components are accessible whenever the integration is enabled. |
+| `PLUG-806` | Supplementary capability components **MUST NOT** be mounted when the requesting user lacks the required permission for that capability. The platform **MUST** hide the slot entirely — it **MUST NOT** render a disabled or greyed-out placeholder. |
+| `PLUG-807` | The platform **MUST** provide a published UI component library — the same primitives used by first-party plugins — that community plugin authors can use to achieve visual consistency with the rest of the product. Use of the component library is strongly recommended but not enforced. |
+| `PLUG-808` | A plugin's supplementary capability identifier **MUST** be namespaced by the plugin identifier (e.g., `puppet:catalog_diff`, not `catalog_diff`) to prevent collision across plugins. |
+| `PLUG-809` | Supplementary capability data calls **MUST** follow the same timeout, caching, and error-contract rules as generic capability calls. A failing supplementary capability **MUST NOT** affect the rendering of generic tabs or other plugins' supplementary capabilities on the same page. |
+| `PLUG-810` | Supplementary capabilities **MUST** be independently RBAC-gated. A user with `puppet:configuration:read` does not automatically gain `puppet:catalog_diff` — the catalog diff is a separate permission that must be explicitly granted. |
+| `PLUG-811` | The conformance test suite (`PLUG-701`) **MUST** include a supplementary capability test fixture, verifying that declared slots, data contracts, and RBAC identifiers are well-formed. |
+
+### 6.7.3 Navigation and discoverability
+
+| ID | Requirement |
+|----|-------------|
+| `PLUG-901` | The platform **MUST** render a sidebar section per enabled integration, listing its declared `global_page` supplementary capabilities as navigation entries. |
+| `PLUG-902` | If an integration declares no `global_page` capabilities, its sidebar section **MUST NOT** appear — integrations that provide only generic types have no integration-specific navigation entries. |
+| `PLUG-903` | The integration administration UI **MUST** list all supplementary capabilities declared by each plugin, including their slot type and RBAC permission identifier, so administrators can assign permissions accurately. |
+| `PLUG-904` | The platform **MUST** handle the case where a plugin is disabled or unhealthy: `node_tab` and `node_action` slots for that plugin **MUST** be hidden; `global_page` entries **MUST** remain in the navigation but display a clear unavailable state rather than a broken page. |
+
+## 6.8 Plugin identity in the data model
 
 | ID | Requirement |
 |----|-------------|
 | `PLUG-501` | Every record produced by a plugin (node, fact, event, journal entry, report, configuration item) **MUST** carry source attribution: at minimum the plugin identifier and the integration instance identifier. |
 | `PLUG-502` | The platform **MUST** preserve source attribution through aggregation, deduplication, and caching. A user viewing aggregated data **MUST** be able to ask "where did this come from?" and receive a precise answer. |
-| `PLUG-503` | When two plugins disagree on a value (e.g., Puppet says OS is Ubuntu 22.04, Ansible says Ubuntu 22.04.3), the platform **MUST** preserve both, **MUST** present a reconciled view by default, and **MUST** allow the user to drill in to see per-source values. |
+| `PLUG-503` | The facts view **MUST** display all facts from all sources in a unified list. Each fact entry **MUST** carry a visible source badge naming the contributing integration(s). When multiple sources report the same key with the same value, the platform **MUST** show one row with all contributing source badges. When sources disagree on a value, the platform **MUST** show a separate row per differing value, each with its source badge — conflicts are visible without any drill-in. The view **MUST** provide a per-source filter that narrows the displayed rows to facts from a selected integration only. |
 | `PLUG-504` | Plugin identity **MUST** be stable across upgrades unless explicitly changed by the plugin author, in which case the platform **MUST** offer a migration path that preserves linked-node assignments. |
 
 ## 6.8 Versioning

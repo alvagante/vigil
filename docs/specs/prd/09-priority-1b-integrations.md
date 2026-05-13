@@ -1,6 +1,8 @@
-# 9. Priority 1b Integrations — Proxmox, AWS, Azure
+# 9. Provisioning Integrations — Proxmox (Phase 1), AWS, Azure (Phase 2a)
 
-These three integrations extend Phase 1 with provisioning capability. They are at the same priority level as the Phase 1 integrations and are implemented after the core four are stable. Each provides Inventory, Facts, and Provisioning — and each populates the journal from real-time API event queries against the underlying tool, not from local state inference.
+This section covers the three provisioning-capable integrations. **Proxmox** is a Phase 1 integration, implemented after the core Phase 1 integrations (Puppet, Ansible, SSH, Bolt) are stable. **AWS and Azure** are deferred to Phase 2a (see [section 20](20-implementation-roadmap.md)). The specifications for all three are included here for reference; the phasing difference does not affect the plugin contract or the data model.
+
+Each integration provides Inventory, Facts, and Provisioning — and each populates the journal from real-time API event queries against the underlying tool, not from local state inference.
 
 ## 9.1 Common requirements for cloud and hypervisor provisioning
 
@@ -17,9 +19,31 @@ These three integrations extend Phase 1 with provisioning capability. They are a
 
 ## 9.2 Proxmox
 
-Proxmox is the on-prem hypervisor target for Phase 1b. It manages QEMU VMs and LXC containers in clustered or standalone deployments.
+Proxmox is the on-prem hypervisor target for Phase 1. It manages QEMU VMs and LXC containers in clustered or standalone deployments.
 
-### 9.2.1 Inventory
+### 9.2.1 Capabilities provided
+
+| Capability | Surface |
+|------------|---------|
+| Inventory | VMs, LXC containers, and hypervisor nodes from the Proxmox cluster API |
+| Facts | Guest configuration and current resource usage |
+| Provisioning | Create, destroy, and lifecycle operations on VMs and LXC containers |
+
+The plugin **MUST NOT** declare Remote Execution, Configuration, Events, Monitoring, Reports, or Deployment capabilities.
+
+#### Supplementary capabilities
+
+In addition to its generic integration types, the Proxmox plugin declares the following supplementary capabilities (see [section 6.7](06-plugin-architecture.md#67-supplementary-capabilities-and-ui-extension-slots)):
+
+| Capability ID | Slot | Description |
+|---------------|------|-------------|
+| `proxmox:snapshot_manager` | `node_tab` | View the snapshot tree for a VM or LXC container; create, revert to, and delete snapshots |
+| `proxmox:console` | `node_action` | Launch a browser-based console session (noVNC or SPICE) for a running VM or LXC; opens in a new browser tab via a Proxmox-issued VNC proxy ticket |
+| `proxmox:resource_topology` | `global_page` | Cluster-wide resource view: CPU, memory, and storage utilization per hypervisor node; guest distribution; HA group status |
+
+Each supplementary capability is independently RBAC-gated and hidden entirely when the user lacks the required permission (`PLUG-806`).
+
+### 9.2.2 Inventory
 
 | ID | Requirement |
 |----|-------------|
@@ -29,7 +53,7 @@ Proxmox is the on-prem hypervisor target for Phase 1b. It manages QEMU VMs and L
 | `PROX-104` | Inventory **MUST** support pagination and **MUST** retrieve only the requested page from the Proxmox API where the API supports it. |
 | `PROX-105` | The plugin **MUST** declare its identity confidence: VM/LXC IDs are stable within a cluster but not unique across clusters; guest hostname is best-effort and not always present. |
 
-### 9.2.2 Facts
+### 9.2.3 Facts
 
 | ID | Requirement |
 |----|-------------|
@@ -37,7 +61,7 @@ Proxmox is the on-prem hypervisor target for Phase 1b. It manages QEMU VMs and L
 | `PROX-202` | The plugin **MUST** retrieve current resource usage: CPU usage, memory usage, disk I/O statistics, network throughput where the API exposes them. |
 | `PROX-203` | Facts cache TTL default: 5 minutes for configuration data, 30 seconds for current usage. |
 
-### 9.2.3 Provisioning
+### 9.2.4 Provisioning
 
 | ID | Requirement |
 |----|-------------|
@@ -50,7 +74,35 @@ Proxmox is the on-prem hypervisor target for Phase 1b. It manages QEMU VMs and L
 | `PROX-307` | Create operations **MUST** allow specification of: name, ID (auto or manual), CPU count, memory, disk size, storage backing, network interface configuration, boot device, OS type, cloud-init parameters where applicable. |
 | `PROX-308` | The plugin **MUST** report task progress for long-running operations (clone, create) by polling Proxmox's task log. |
 
-### 9.2.4 Journal
+### 9.2.5 Snapshot management
+
+Snapshots are a first-class Proxmox concept. Vigil surfaces the snapshot tree as a per-node tab and gates snapshot mutation actions with dedicated permissions, separate from general lifecycle operations.
+
+| ID | Requirement |
+|----|-------------|
+| `PROX-701` | The plugin **MUST** retrieve the snapshot list per VM/LXC including: snapshot name, description, creation time, parent snapshot name (to reconstruct the tree), and whether RAM state was included. |
+| `PROX-702` | The plugin **MUST** render the snapshot list as a tree, not a flat list, preserving the parent–child relationships recorded by Proxmox. |
+| `PROX-703` | The plugin **MUST** support snapshot creation with: name (required), description (optional), RAM state inclusion flag. |
+| `PROX-704` | The plugin **MUST** support revert-to-snapshot. Revert is a destructive operation — the UI **MUST** require explicit confirmation before submitting the request. The confirmation dialog **MUST** name the snapshot and state that current guest state will be overwritten. |
+| `PROX-705` | The plugin **MUST** support snapshot deletion. Deletion of a snapshot that has children is subject to Proxmox's own constraint (children must be deleted first); the plugin **MUST** surface this constraint as an actionable error. |
+| `PROX-706` | Snapshot create, revert, and delete operations **MUST** generate journal entries attributing the action to the initiating Vigil user. |
+| `PROX-707` | The `proxmox:snapshot_manager` supplementary capability **MUST** be hidden (not greyed out) when the user lacks any of the required snapshot permissions. The tab renders only the operations the user holds permission for — a user with read-only snapshot permission sees the tree but no mutation actions. |
+
+### 9.2.6 Console access
+
+The Proxmox API issues short-lived VNC proxy tickets that allow direct browser console access to a running VM or LXC. Vigil brokers this ticket on behalf of the user but does not relay the console stream itself — the browser connects directly to Proxmox's VNC proxy endpoint.
+
+| ID | Requirement |
+|----|-------------|
+| `PROX-801` | The plugin **MUST** support console access for running VMs and LXC containers via the Proxmox VNC proxy ticket API. |
+| `PROX-802` | The console **MUST** open in a new browser tab, not in an inline frame within the Vigil application. This avoids cross-origin embedding complexity and keeps the noVNC/SPICE session's full viewport. |
+| `PROX-803` | Vigil **MUST** obtain a fresh proxy ticket on each console launch. Tickets **MUST NOT** be cached or reused across sessions. |
+| `PROX-804` | The console type (noVNC or SPICE) **MUST** follow the VM's configured display type. The plugin **MUST** prefer noVNC where both are available, for browser compatibility without a plugin. |
+| `PROX-805` | The `proxmox:console` action **MUST** be visible only when the guest is in `running` state. The action **MUST** be absent (not disabled) when the guest is stopped, paused, or in an unknown state. |
+| `PROX-806` | Console launch **MUST** generate an audit trail entry: which user launched a console session to which guest, at what time. Console sessions are privileged — they bypass OS-level access controls enforced by SSH or Ansible. The audit entry **MUST** note this explicitly. |
+| `PROX-807` | The administration UI **MUST** document, adjacent to the `proxmox:vm:console` and `proxmox:lxc:console` permissions, that granting console access is equivalent to granting root-equivalent interactive access to the guest regardless of what other RBAC rules restrict. |
+
+### 9.2.7 Journal
 
 | ID | Requirement |
 |----|-------------|
@@ -58,7 +110,7 @@ Proxmox is the on-prem hypervisor target for Phase 1b. It manages QEMU VMs and L
 | `PROX-402` | Journal contributions include: VM/LXC create, destroy, start, stop, shutdown, reboot, suspend, resume, migrate, clone, snapshot, and any other lifecycle task type Proxmox records. |
 | `PROX-403` | Each journal entry **MUST** carry: the upstream task identifier, initiating user (as recorded by Proxmox), result, duration. |
 
-### 9.2.5 Authentication
+### 9.2.8 Authentication
 
 | ID | Requirement |
 |----|-------------|
@@ -66,7 +118,7 @@ Proxmox is the on-prem hypervisor target for Phase 1b. It manages QEMU VMs and L
 | `PROX-502` | The plugin **MUST** verify TLS certificates by default. A skip-verify mode **MAY** be exposed for development with a clear warning. |
 | `PROX-503` | Credentials **MUST** be handled through the platform's secrets-aware mechanism. |
 
-### 9.2.6 Configuration schema
+### 9.2.9 Configuration schema
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -80,12 +132,26 @@ Proxmox is the on-prem hypervisor target for Phase 1b. It manages QEMU VMs and L
 | `cache_ttl.*` | no | Per-capability TTL overrides |
 | `concurrency` | no | Concurrent provisioning operations limit |
 
-### 9.2.7 RBAC
+### 9.2.10 RBAC
 
 | ID | Requirement |
 |----|-------------|
-| `PROX-601` | Permissions: `proxmox:inventory:read`, `proxmox:facts:read`, `proxmox:vm:create`, `proxmox:vm:destroy`, `proxmox:vm:start`, `proxmox:vm:stop`, `proxmox:vm:reboot`, `proxmox:vm:suspend`, `proxmox:vm:resume`, `proxmox:lxc:create`, `proxmox:lxc:destroy`, plus the same lifecycle for LXC. |
-| `PROX-602` | Granular per-action and per-target-pool permissions **MUST** be enforceable. |
+| `PROX-601` | The Proxmox plugin's actions **MUST** be governed by platform RBAC. The following distinct permissions **MUST** exist: |
+| `PROX-602` | — `proxmox:inventory:read` — view VMs, LXC containers, and hypervisor nodes |
+| `PROX-603` | — `proxmox:facts:read` — view guest configuration and resource usage |
+| `PROX-604` | — `proxmox:cluster:read` — view cluster-wide resource topology (required for `proxmox:resource_topology` supplementary capability) |
+| `PROX-605` | — `proxmox:vm:create` — create VMs |
+| `PROX-606` | — `proxmox:vm:destroy` — destroy VMs |
+| `PROX-607` | — `proxmox:vm:start`, `proxmox:vm:stop`, `proxmox:vm:reboot`, `proxmox:vm:suspend`, `proxmox:vm:resume` — lifecycle operations on VMs |
+| `PROX-608` | — `proxmox:vm:snapshot:read` — view snapshot tree |
+| `PROX-609` | — `proxmox:vm:snapshot:create` — create snapshots |
+| `PROX-610` | — `proxmox:vm:snapshot:revert` — revert to a snapshot (kept separate from create because revert is destructive) |
+| `PROX-611` | — `proxmox:vm:snapshot:delete` — delete snapshots |
+| `PROX-612` | — `proxmox:vm:console` — launch browser console (privileged — see `PROX-807`) |
+| `PROX-613` | — `proxmox:lxc:create`, `proxmox:lxc:destroy`, `proxmox:lxc:start`, `proxmox:lxc:stop`, `proxmox:lxc:reboot`, `proxmox:lxc:suspend`, `proxmox:lxc:resume` |
+| `PROX-614` | — `proxmox:lxc:snapshot:read`, `proxmox:lxc:snapshot:create`, `proxmox:lxc:snapshot:revert`, `proxmox:lxc:snapshot:delete` |
+| `PROX-615` | — `proxmox:lxc:console` — launch browser console for LXC (same privilege warning as `PROX-807`) |
+| `PROX-616` | Granular per-action and per-storage-pool permissions **MUST** be enforceable: a role may be restricted to create VMs only on specific storage pools or cluster nodes. |
 
 ## 9.3 AWS
 

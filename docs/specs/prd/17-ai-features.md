@@ -39,7 +39,7 @@ The MCP (Model Context Protocol) server exposes well-shaped, read-only infrastru
 |----|-------------|
 | `MCP-201` | MCP tool responses **MUST** be cacheable and efficient. AI agents will issue many queries; the platform **MUST NOT** flood upstream APIs as a result. |
 | `MCP-202` | The MCP server **MUST** apply per-principal rate limiting to prevent runaway AI loops from overwhelming the platform. In multi-node deployments, rate limits **MAY** be enforced per-node rather than globally; the platform **MUST** document the enforcement scope so operators can size limits appropriately. Cluster-wide enforcement **MAY** be provided via a coordinated backend and **MUST NOT** be represented as the default. |
-| `MCP-203` | Cache scope for MCP tool responses **MUST** be tied to the requesting principal's permission scope — an AI agent's query **MUST NOT** receive cached responses computed for a higher-permissioned user. |
+| `MCP-203` | MCP tool responses **MUST** be RBAC-filtered at construction time against the requesting principal's permission scope, using the same shared integration cache and presentation-time filtering model as the web UI (see `CACHE-006`). An AI agent **MUST NOT** receive data outside its principal's permitted scope. Per-principal cache entries are not used — the shared cache is filtered before the response is returned. |
 
 ### 17.1.4 Authentication and authorization
 
@@ -63,9 +63,9 @@ The initial MCP tool set is read-only and **MUST** include at minimum:
 | `list_groups` | Groups with member counts and source attribution |
 | `get_group_members` | Nodes in a given group |
 | `list_journal_entries` | Filterable journal feed (per node, per group, time-range, type, source) |
-| `get_report` | Detailed report (Puppet run, scan, etc.) by report identifier |
-| `list_reports` | Filtered list of reports per node, time range |
-| `get_health` | Per-integration health summary |
+| `get_report` | Detailed report by report identifier — covers all integrations that provide the Reports capability (Puppet run reports, vulnerability scans, etc.), with source attribution |
+| `list_reports` | Filtered list of reports per node and time range — integration-agnostic; results are attributed per source integration |
+| `get_integration_status` | Per-integration health summary: overall status, per-capability health, last-success timestamps, and active error messages for each configured integration |
 | `get_recent_executions` | Read-only execution history (transcripts where allowed by RBAC) |
 
 | ID | Requirement |

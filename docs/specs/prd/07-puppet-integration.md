@@ -35,6 +35,22 @@ Per the [integration matrix](05-integration-matrix.md), the Puppet plugin provid
 
 The plugin **MUST NOT** declare Monitoring, Remote Execution, Provisioning, or Deployment capabilities. (Bolt, a sibling integration, provides Remote Execution against Puppet-managed nodes; the two must not be conflated.)
 
+### 7.2.1 Supplementary capabilities
+
+In addition to its generic integration types, the Puppet plugin declares the following supplementary capabilities (see [section 6.7](06-plugin-architecture.md#67-supplementary-capabilities-and-ui-extension-slots)):
+
+| Capability ID | Slot | Description |
+|---------------|------|-------------|
+| `puppet:catalog_view` | `node_tab` | Browse the compiled catalog for this node: all resources, their attributes, dependencies, and containment hierarchy |
+| `puppet:catalog_diff` | `node_action` | Compare two compiled catalogs for this node (PuppetDB latest vs. a freshly compiled environment, or two environments against each other) |
+| `puppet:hiera_lookup` | `node_tab` | Look up Hiera keys in node context: resolved value, hierarchy level that provided it, and values from all other levels |
+| `puppet:hiera_explorer` | `global_page` | Cross-infrastructure Hiera browser: search for a key across all environments and all nodes, see where it is set and what it resolves to per node |
+| `puppet:node_list_by_environment` | `global_page` | Puppet-specific node list showing environment, last run status, last run time, and cert status — a Puppet-centric view of the managed estate |
+| `puppet:code_analysis` | `global_page` | Analysis of the control-repo: unused Hiera keys, classes with no node assignments, resources declared but never applied |
+| `puppet:environment_manager` | `global_page` | Environment list with deploy status, last deploy time, and deploy/flush-cache actions (see `PUP-501`–`PUP-509`) |
+
+Each supplementary capability is independently RBAC-gated and hidden entirely when the user lacks the required permission (`PLUG-806`).
+
 ## 7.3 Inventory
 
 | ID | Requirement |
@@ -116,11 +132,12 @@ Hiera browsing is a flagship Puppet feature. The depth of inspection here distin
 | `PUP-501` | The Puppet plugin **MUST** list available environments from Puppetserver. |
 | `PUP-502` | The Puppet plugin **MUST** display each environment's metadata: name, code version (if available), last deploy timestamp, deploy initiator. |
 | `PUP-503` | The Puppet plugin **MUST** support environment cache flushing on Puppetserver via the documented endpoints. |
-| `PUP-504` | The Puppet plugin **MUST** support environment deployment via r10k or Code Manager: |
-| `PUP-505` | — Where the deployment system exposes a webhook or API endpoint, the plugin **MUST** trigger deployment via that endpoint. |
-| `PUP-506` | — Where webhook is unavailable, the plugin **MUST** support deployment via remote command execution against the Puppet master host (using a sibling execution integration). The plugin **MUST NOT** require its own SSH or shell capability for this. |
-| `PUP-507` | Environment deployment progress and result **MUST** be reported back to the user, with the deployment outcome recorded as a system event. |
-| `PUP-508` | Environment deployment **MUST** be RBAC-gated as a distinct action separate from generic configuration browsing. |
+| `PUP-504` | The Puppet plugin **MUST** support the following r10k / Code Manager operations and no others: **(a)** deploy a single named environment; **(b)** deploy all environments. Module-level deploys (`r10k deploy module`) are **out of scope** — they operate below the environment granularity Vigil manages and are not exposed in the UI. |
+| `PUP-505` | The plugin **MUST** support deployment status queries: listing environments with their current deploy status, last deploy timestamp, last deploy initiator, and outcome. Status queries are read-only and do not require the `puppet:environment:deploy` RBAC permission. |
+| `PUP-506` | Where the deployment system exposes an API endpoint (Code Manager API, r10k webhook), the plugin **MUST** trigger deployment via that endpoint. |
+| `PUP-507` | Where an API endpoint is unavailable, the plugin **MUST** support deployment via remote command execution against the Puppet master host (using a sibling execution integration). The plugin **MUST NOT** require its own SSH or shell capability for this. |
+| `PUP-508` | Environment deployment progress and result **MUST** be reported back to the user, with the deployment outcome recorded as a journal entry against the Puppet integration. |
+| `PUP-509` | Environment deployment **MUST** be RBAC-gated as a distinct action (`puppet:environment:deploy`) separate from generic configuration browsing. Deploy-all requires the same permission as deploy-single — there is no separate permission for the bulk operation. |
 
 ## 7.8 Events
 

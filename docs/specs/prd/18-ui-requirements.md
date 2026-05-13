@@ -56,7 +56,7 @@ The node detail page is the application's most data-rich screen. It aggregates d
 | Section | Source type | Display behavior |
 |---------|------------|------------------|
 | Identity & Status | Inventory | Source attribution per identity attribute; group membership; current status per source |
-| System Facts | Facts | Tabular, hierarchically organized, source-attributed; per-fact-key reconciled view with drill-in to per-source values |
+| System Facts | Facts | Tabular, hierarchically organized; all facts from all sources shown together; each row carries a source badge; multi-source agreement shown as one row with multiple badges; conflicts shown as separate rows per differing value; per-source filter control |
 | Health & Monitoring | Monitoring | Current check status; live-updating; alerts list |
 | Configuration | Configuration | Hiera browse with key resolution; catalog browse; environment selector; catalog diff link |
 | Journal / Timeline | Events (extracted from all journal-contributing types) | Filterable, paginated; group-linked entries; drill-down to source |
@@ -74,6 +74,9 @@ The node detail page is the application's most data-rich screen. It aggregates d
 | `UI-305` | A failing section **MUST** display a degraded-state banner with the diagnostic and a "retry" affordance. The rest of the page **MUST** remain functional. |
 | `UI-306` | The user **MUST** be able to deep-link to specific tabs / sections of the node detail page. |
 | `UI-307` | The node detail page **MUST** show the user's permitted actions only. Actions not permitted by RBAC **MUST NOT** appear. |
+| `UI-308` | The Facts section **MUST** display all facts from all integrations covering this node in a single unified table. Each row **MUST** carry a source badge identifying the contributing integration(s). When multiple integrations report the same fact key with the same value, they **MUST** be collapsed into one row with all source badges shown. When integrations report the same key with different values, each value **MUST** appear as a separate row with its own source badge — no value is hidden or suppressed. The view **MUST** provide a per-source filter that limits the displayed rows to facts from one selected integration. |
+| `UI-309` | Tab ordering on the node detail page **MUST** be: generic capability tabs first (in the order: Facts, Configuration, Events/Journal, Run History, Deployments, Execute, Lifecycle), followed by supplementary capability `node_tab` tabs in integration load order. Each supplementary tab **MUST** be labelled with both the capability name and its contributing integration name, to distinguish tabs from different integrations that may have similar names. |
+| `UI-310` | `node_action` supplementary capability actions **MUST** appear in the node action bar whenever the declaring plugin is linked to the node and the user has the required permission — independently of whether any execution integration covers the node. The presence of an Execute tab is not a prerequisite. A node with only a provisioning integration may have `node_action` entries (e.g., a Proxmox console action) with no Execute tab present, and this is a valid and complete state. |
 
 ## 18.5 Journal / timeline UI
 
@@ -116,9 +119,9 @@ The node detail page is the application's most data-rich screen. It aggregates d
 
 | ID | Requirement |
 |----|-------------|
-| `UI-701` | The health dashboard **MUST** display every enabled integration with: overall status, per-capability status, last-successful-call timestamp per capability, last-failure detail per capability. |
-| `UI-702` | The dashboard **MUST** allow administrators to: trigger manual health check, refresh credentials, reload configuration, disable/re-enable integration. |
-| `UI-703` | The dashboard **MUST** show health history (e.g., last 24 hours) so flapping is visible. |
+| `UI-701` | The health dashboard **MUST** display every enabled integration as a card. Each card **MUST** show: (a) integration name and plugin identifier; (b) aggregate status as the headline indicator — one of healthy, degraded, unhealthy, or flapping; (c) an expandable detail panel containing per-capability status, last-success timestamp, last-failure timestamp, and last diagnostic message for each declared capability; (d) a flap indicator when the integration is flapping, showing the count of state changes in the current rolling window (per `HEALTH-104`). |
+| `UI-702` | The dashboard **MUST** allow administrators to: trigger a manual health check, refresh credentials, reload configuration, disable/re-enable an integration. |
+| `UI-703` | The flapping state (per `HEALTH-104`) **MUST** be visually distinct from unhealthy — an integration that alternates between healthy and unhealthy is a different operational problem from one that is consistently down. The flap indicator **MUST** show the number of state transitions in the rolling window, not just a boolean flapping flag. |
 | `UI-704` | The dashboard **MUST** show platform-level health: database connectivity, cache health, queue depth, current load. |
 
 ## 18.9 Settings / administration UI

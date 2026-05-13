@@ -179,21 +179,11 @@ The roadmap is sequence-prescriptive but not date-prescriptive. The order matter
 
 **Required tests:** End-to-end create/destroy flow; journal sourced from Proxmox task log; state transition reporting.
 
-## 20.12 Feature Set 11 — Provisioning (AWS + Azure)
+## 20.12 Feature Set 11 — Provisioning (AWS + Azure) — Deferred
 
-**Scope:** Cloud provisioning integrations.
+**Status: Deferred to Phase 2.**
 
-**Acceptance criteria:**
-
-- [ ] EC2 instances and Azure VMs appear in inventory with derived groupings (region/VPC/tag for AWS; location/RG/tag for Azure).
-- [ ] Instances can be launched/terminated and lifecycle-managed (start/stop/reboot/etc.).
-- [ ] Resource discovery returns current options.
-- [ ] Journal is populated from CloudTrail / Activity Log via realtime queries.
-- [ ] Vigil-initiated provisioning correlates with the resulting cloud event.
-- [ ] Authentication mechanisms (access key, role assumption, SSO; SPN, managed identity) work.
-- [ ] Per-tag scoping in RBAC works.
-
-**Required tests:** End-to-end provisioning flow; cross-account scenarios; tag-scoped RBAC; CloudTrail correlation.
+AWS and Azure provisioning are moved out of Phase 1. Proxmox (FS 10) covers the on-premise provisioning use case for Phase 1. Cloud provisioning will be delivered in Phase 2 once the platform and core integration set are stable. The specifications for AWS and Azure remain in [section 9](09-priority-1b-integrations.md) as the authoritative reference for when these integrations are built.
 
 ## 20.13 Feature Set 12 — MCP Server
 
@@ -243,22 +233,34 @@ The roadmap is sequence-prescriptive but not date-prescriptive. The order matter
 
 **Required tests:** End-to-end OIDC login flow; literal group-to-role mapping correctness; OIDC outage + local auth continuity; rejection of multi-IdP configuration.
 
-## 20.16 Phase 2 — Enterprise Edition
+## 20.16 Phase 2 — Additional Integrations and Enterprise Edition (Deferred)
 
-Phase 2 delivers EE features in priority order. Each feature set ships as an incremental enterprise release; CE continues to receive bug fixes and new integration plugins independently.
+**Phase 2 is not developed concurrently with Phase 1.** It begins only after Phase 1 CE is complete and stable. The CE extension points built into Phase 1 (`Vigil.Auth.Provider`, `Vigil.Audit.Exporter`, `Vigil.Execution.ApprovalGate`, etc.) are designed to accommodate Phase 2 EE features without architectural rework — but no EE code is written during Phase 1.
+
+### Phase 2a — Additional Integrations (CE)
+
+These integrations are moved out of Phase 1 and delivered as the first priority in Phase 2. Each ships as its own feature set following the same pattern as Phase 1 feature sets.
+
+| Integration | Notes |
+|-------------|-------|
+| **AWS** (EC2 provisioning + inventory) | Spec in [section 9](09-priority-1b-integrations.md) |
+| **Azure** (VM provisioning + inventory) | Spec in [section 9](09-priority-1b-integrations.md) |
+| Priority 2 integrations | Per [section 10](10-priority-2-3-integrations.md), in community-driven order |
+
+### Phase 2b — Enterprise Edition (EE)
+
+EE development begins when there is validated commercial demand and a team dedicated to it. The feature set sequence is defined in [`docs/specs/editions.md`](../editions.md). The order below is indicative; actual sequencing is driven by customer requirements at the time.
 
 | Feature Set | Scope |
 |-------------|-------|
-| **FS EE-1** — Enterprise External Authentication | SAML 2.0; LDAP/AD bind + search; multi-IdP OIDC coexistence; group-to-role wildcard patterns; IdP group re-evaluation on every login with additive multi-group resolution; local-auth disable capability |
-| **FS EE-2** — High Availability | libcluster; distributed PubSub; session affinity; zero-downtime deploys |
-| **FS EE-3** — Approval Workflows | Action queuing; multi-approver; expiry; approval audit |
-| **FS EE-4** — Advanced Audit & Compliance | SIEM export (JSON/CEF); scheduled export; tamper-evident signatures |
-| **FS EE-5** — Scheduled Executions | Cron scheduling; schedule history; RBAC-at-execution-time; overlap prevention |
+| **FS EE-1** — Enterprise External Authentication | SAML 2.0; LDAP/AD; multi-IdP OIDC; wildcard group patterns; IdP group re-evaluation on login |
+| **FS EE-2** — High Availability | Clustering; distributed PubSub; session affinity; zero-downtime deploys |
+| **FS EE-3** — Approval Workflows | Configuration-driven approval rules; multi-approver; expiry; approval audit trail |
+| **FS EE-4** — Advanced Audit & Compliance | SIEM export (JSON/CEF); signed export; scheduled delivery |
+| **FS EE-5** — Scheduled Executions | Cron scheduling; RBAC-at-execution-time; schedule history; overlap prevention |
 | **FS EE-6** — Outbound Webhooks | Event-driven delivery; retry/backoff; signed payloads |
 | **FS EE-7** — Custom Dashboards | Widget catalog; shareable dashboards; per-dashboard access control |
 | **FS EE-8** — Multi-tenancy | Tenant isolation; per-tenant config; MSP mode |
-
-**EE phase gate (per feature set):** Each EE feature set ships when its acceptance criteria pass and the license enforcement integration is validated. EE releases are independent of CE releases — CE does not block on EE delivery.
 
 See [`docs/specs/editions.md`](../editions.md) for the full CE/EE commercial and architectural rationale.
 
@@ -274,7 +276,7 @@ The roadmap above describes *feature sets*. The following cross-cutting concerns
 | `ROAD-104` | The audit trail **MUST** be functional from Feature Set 3 — every subsequent feature set adds to the audit surface, not the audit foundation. The audit-first ordering requirement (`RBAC-305`) **MUST** be implemented in FS 3, before any feature set introduces irreversible side effects (first occurrence: FS 2 SSH execution — which therefore inherits an audit-ordering dependency on FS 3 RBAC infrastructure; executions in FS 2 record to a minimal local audit log until FS 3 lands). |
 | `ROAD-105` | The contract conformance test suite **MUST** evolve in step with the contract — every contract change is paired with conformance updates. |
 | `ROAD-106` | Cold-start cache warming (`CACHE-009`) **MUST** be implemented no later than Feature Set 4, the first feature set exposing minutes-scale TTLs that make cold starts user-visible. |
-| `ROAD-107` | The in-flight execution durability requirement (`EXEC-106`) **MUST** be implemented no later than Feature Set 5, the first feature set introducing long-running executions. Feature Set 2 SSH execution operates under a documented known limitation (output lost on restart) until FS 5. |
+| `ROAD-107` | The in-flight execution durability requirement (`EXEC-106`) **MUST** be implemented no later than Feature Set 5 (Bolt), the first feature set introducing long-running multi-target executions. Feature Set 2 SSH execution operates under a documented known limitation (output lost on restart) until FS 5. |
 
 ## 20.18 Acceptance gates per phase
 
@@ -282,11 +284,12 @@ The following milestones gate phase completion:
 
 ### 20.18.1 Phase 1 complete (CE)
 
-Feature Sets 1 through 14 complete + cross-cutting concerns tracked. The system can:
+Feature Sets 1 through 10 + 12 through 14 complete (FS 11 AWS+Azure deferred) + cross-cutting concerns tracked. The system can:
+
 - Manage SSH, Bolt, Ansible, and Puppet inventories with full unified-inventory linking
-- Execute commands across all three execution integrations with streaming output
+- Execute commands across all execution integrations with streaming output
 - Read full Puppet depth: facts, configuration (Hiera, catalogs, environments), events, reports
-- Provision Proxmox VMs / containers, AWS EC2 instances, Azure VMs
+- Provision Proxmox VMs and containers
 - Maintain a node journal with manual notes
 - Authenticate users locally or via a single OIDC provider with full RBAC including granular permissions and literal group-to-role mapping
 - Expose MCP tools to external AI agents with per-principal rate limiting
@@ -294,13 +297,13 @@ Feature Sets 1 through 14 complete + cross-cutting concerns tracked. The system 
 - Survive integration failures with graceful degradation and circuit breakers
 - Operate at 10,000 nodes within performance targets on a single node
 
-### 20.18.2 Phase 2 — Enterprise Edition
+### 20.18.2 Phase 2 — Additional integrations and Enterprise Edition
 
-Feature Sets EE-1 through EE-8 deliver enterprise features as an independent stream. Each feature set is independently releasable and gated by its own acceptance criteria.
+Phase 2 is not started until Phase 1 is complete and stable. It delivers AWS/Azure integrations first (Phase 2a, CE), then EE features driven by validated commercial demand (Phase 2b). See section 20.16 for the full Phase 2 breakdown.
 
-### 20.18.3 Phase 2 partial — additional Priority 2 integrations
+### 20.18.3 Priority 2 and 3 integrations
 
-Priority 2 integration plugins (per [section 10.2](10-priority-2-3-integrations.md#102-priority-2--notes-per-integration)) **MAY** be implemented in any order after Phase 1 CE completion. Each plugin **MUST** ship through its own feature set with acceptance criteria specific to that plugin. Priority 2 integrations are CE unless the individual plugin's capability is identified as governance/enterprise in nature and explicitly marked for EE in a future scope amendment.
+Priority 2 and 3 integration plugins (per [section 10](10-priority-2-3-integrations.md)) are implemented in community-driven order after Phase 1 CE completion. Each plugin ships through its own feature set with plugin-specific acceptance criteria. All are CE unless explicitly marked otherwise in a future scope amendment.
 
 ## 20.19 Prioritization decisions worth noting
 
@@ -309,10 +312,12 @@ A few non-obvious sequencing choices in the roadmap above:
 - **SSH before Puppet (FS 2 vs FS 4)** — SSH is the simplest non-trivial integration. It validates the plugin contract end-to-end against a real external system before the more complex Puppet integration is started.
 - **Authentication before deep Puppet (FS 3 vs FS 6)** — Once read access exists in FS 4, RBAC must be enforceable. Adding RBAC after Puppet's full depth would invite gaps.
 - **Bolt before deep Puppet (FS 5 vs FS 6)** — Bolt is small and validates the *execution* side of the plugin contract before the heavier Puppet feature set lands.
-- **Ansible after deep Puppet (FS 7 vs FS 6)** — Validates the plugin contract's generality across two execution integrations and one deep configuration integration.
-- **Journal before unified inventory (FS 8 vs FS 9)** — Journal mechanics are simpler and validate event extraction before the more delicate linking work.
-- **OIDC in Phase 1 (FS 14), SAML/LDAP in Phase 2 (FS EE-1)** — Generic single-IdP OIDC is cheap to implement and essential for small-team adoption. SAML and LDAP carry substantially more operational surface (metadata exchange, certificate rotation, directory bind semantics) that small teams do not need and that is properly priced as an enterprise feature.
-- **MCP and AI in Phase 1 (FS 12–13)** — Pulled forward from the original roadmap because these features are core differentiators for the AI-native tooling wave. They depend on a stable data model (delivered by FS 8–9) so they land after, not before, the unified inventory and journal are complete.
+- **Ansible after deep Puppet (FS 7 vs FS 6)** — Validates the plugin contract's generality: two execution integrations and one deep configuration integration now exercise the contract from different angles.
+- **Journal before unified inventory (FS 8 vs FS 9)** — Journal mechanics are simpler and validate event extraction before the more delicate cross-source linking work.
+- **Proxmox before AWS/Azure (FS 10, Phase 1 vs Phase 2)** — Proxmox is the on-premise provisioning use case and is simpler operationally (no cloud IAM, no billing concerns). AWS and Azure are deferred to Phase 2 — they are architecturally similar to Proxmox and can be added once the platform and core integrations are proven.
+- **EE deferred entirely (Phase 2b)** — EE is not developed concurrently with CE. The CE extension points are built correctly from the start so EE can be layered in without architectural rework, but no EE code is written until Phase 1 is complete and there is validated commercial demand.
+- **OIDC in Phase 1 (FS 14), SAML/LDAP in Phase 2 EE** — Generic single-IdP OIDC is cheap to implement and essential for small-team adoption. SAML and LDAP carry substantially more operational surface that small teams do not need.
+- **MCP and AI in Phase 1 (FS 12–13)** — Core differentiators for the AI-native tooling wave. They depend on a stable data model (FS 8–9) so they land after unified inventory and journal are complete.
 
 ---
 

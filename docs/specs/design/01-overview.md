@@ -83,8 +83,8 @@ Vigil is a single Elixir umbrella application rendering HTML over WebSockets via
 
 | Concern | Library / tool | Rationale |
 |---------|---------------|-----------|
-| Web framework | **Phoenix 1.7+** | Target framework; stable LiveView |
-| UI rendering | **Phoenix LiveView 0.20+** | Server-rendered interactive UI over WebSocket |
+| Web framework | **Phoenix 1.8+** | Target framework; stable LiveView |
+| UI rendering | **Phoenix LiveView 1.1+** | Server-rendered interactive UI over WebSocket |
 | HTML components | **Phoenix.Component + LiveView.JS** | Typed function components; minimal JS |
 | Styling | **Tailwind CSS + Phoenix UI primitives** | Predictable, utility-first; works well with LiveView |
 | ORM | **Ecto 3.x** | First-class for PostgreSQL |
