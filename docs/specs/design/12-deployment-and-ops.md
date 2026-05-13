@@ -420,4 +420,4 @@ For actions that could affect production data (hard-purge, mass-disable, etc.), 
 
 ---
 
-[← Previous: Puppet Integration](11-puppet-integration.md) | [Next: Testing Strategy →](13-testing-strategy.md)
+[← Previous: Proxmox Integration](15-proxmox-integration.md) | [Next: Testing Strategy →](13-testing-strategy.md)

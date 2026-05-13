@@ -34,41 +34,50 @@ Vigil.Core.Executions.submit(principal, %{
 })
 ```
 
-The context follows an **audit-first pipeline** that satisfies `RBAC-305`. The ordering is:
+The context follows an **audit-first pipeline** that satisfies `RBAC-305`. Per **ADR-0004** the pipeline produces one `executions` row per dispatched target node, sharing an `execution_group_id`; per **ADR-0005** denied nodes do **not** receive `executions` rows — they appear only in the audit entry.
 
-1. **Validate** — per `FLOW-101`: targets are reachable via the integration, RBAC permits the action on each target, command passes the allowlist. RBAC validation uses the pre-resolved target list (see design/08 §8.3.3) — a single `Nodes.get_many/1` issues `WHERE id = ANY($1)` and the resolved node structs flow through the entire pipeline.
-2. **Resolve targets** — expand groups / filter to a concrete node_id list. This is the same resolution used by the RBAC check; no second DB query.
-3. **Create the execution row** (`executions` + `execution_targets` placeholders) with `overall_status: :submitted`.
-4. **Write the audit entry in `pending` state** — `Audit.write_pending/2` inserts an `audit_entries` row with `result: :pending`, returning the entry ID. The audit write is in the **same DB transaction** as the execution row write, so either both land or neither does.
-5. **Start the Stream GenServer** via `DynamicSupervisor.start_child/2`.
-6. **Finalize the audit entry** — on Stream start, the GenServer sends `Audit.finalize/2` with `:success` (the action was initiated) or the submission is unrolled and the audit entry finalized `:failure` with reason.
-7. **Return** `{:ok, execution_id}` to the caller.
+Ordering:
+
+1. **Resolve targets** — expand groups/filter to a concrete `node_id` list. A single `Nodes.get_many/1` issues `WHERE id = ANY($1)` and the resolved node structs flow through the entire pipeline.
+2. **Validate** — per `FLOW-101`: targets are reachable via the integration, RBAC is evaluated **per-target** (`RBAC-102`), command passes the allowlist. The validator returns `{:ok, %{dispatched: [...], denied: [...]}}` where each `denied` entry carries the failing check (`:rbac_scope | :allowlist | :command_pattern`) and a human-readable reason.
+3. **Reject** if `dispatched == []` and `denied != []` — no targets passed RBAC; nothing to run. The audit entry is still written with `result: :denied`.
+4. **Create the `execution_groups` row** with the full `intended_targets`, `dispatched_count`, and `denied_count`.
+5. **Bulk-insert one `executions` row per dispatched target** with `outcome: :running`, `streaming_state: :live`, sharing the `execution_group_id`. `Repo.insert_all/3` with `returning: [:id, :node_id]` returns the per-target IDs needed by the Stream GenServer.
+6. **Write the audit entry in `pending` state** — `Audit.write_pending/2` inserts an `audit_entries` row with `result: :pending` and `params.denied_targets` recording the per-node permission decisions (`RBAC-109`). The audit write is in the **same DB transaction** as the group + per-target inserts, so either all land or none do.
+7. **Start the Stream GenServer** via `DynamicSupervisor.start_child/2`, keyed on `execution_group_id` — one GenServer owns the entire group's runner, with per-target sub-state.
+8. **Finalize the audit entry** — on Stream start, `Audit.finalize/2` flips it to `:success` (the action was initiated). On Stream start failure, the unroll path finalizes `:failure` and updates every dispatched `executions` row's outcome to `:failed_to_start`.
+9. **Return** `{:ok, execution_group_id}` to the caller.
 
 ```elixir
 defmodule Vigil.Core.Executions do
   def submit(principal, submission) do
     Repo.transaction(fn ->
-      with {:ok, resolved}      <- Validator.validate(principal, submission),
-           {:ok, execution}     <- insert_execution(principal, submission, resolved),
-           {:ok, audit_pending} <- Audit.write_pending(principal, execution, submission) do
-        {:ok, {execution, audit_pending, resolved}}
+      with {:ok, resolved}      <- resolve_targets(submission.targets),
+           {:ok, decisions}     <- Validator.validate(principal, submission, resolved),
+           :ok                   <- ensure_any_dispatched(decisions),
+           {:ok, group}         <- insert_group(principal, submission, decisions),
+           {:ok, executions}    <- insert_per_target_executions(group, decisions.dispatched),
+           {:ok, audit_pending} <- Audit.write_pending(principal, group, decisions) do
+        {:ok, {group, executions, audit_pending}}
       else
+        {:error, :all_denied, decisions} ->
+          Audit.write_finalized(principal, :denied, decisions)
+          Repo.rollback({:error, :all_denied})
         err -> Repo.rollback(err)
       end
     end)
     |> case do
-      {:ok, {execution, audit_pending, resolved}} ->
-        case Execution.Supervisor.start_stream(execution, resolved) do
+      {:ok, {group, executions, audit_pending}} ->
+        case Execution.Supervisor.start_stream(group, executions) do
           {:ok, _pid} ->
             Audit.finalize(audit_pending, :success)
-            {:ok, execution.id}
+            {:ok, group.id}
           {:error, reason} ->
             Audit.finalize(audit_pending, {:failure, reason})
-            # Execution row stays with :failed_to_start; journal entry not written.
+            Vigil.Core.Executions.mark_all_failed_to_start(group.id, reason)
             {:error, reason}
         end
-      {:error, {:error, reason}} ->
-        {:error, reason}
+      {:error, _} = err -> err
     end
   end
 end
@@ -76,11 +85,12 @@ end
 
 Why this ordering matters:
 
-- If the process crashes between audit write and Stream start, a durable `pending` audit entry remains. A reconciliation job (see §6.2.7 below) flips orphaned `pending` rows to `failure` with `reason: :lost_start` after a grace period. The audit trail never has a gap.
-- If the DB is unavailable at any point, the transaction rolls back — no execution row, no audit row, no stream. The user sees a clean error.
-- If the stream crashes after start but before completion (e.g., plugin runner dies), the audit entry is still `:success` for *submission*; stream-level outcome is captured in the `executions.overall_status` column and in the execution's own journal entries. Submission audit ≠ completion audit.
+- If the process crashes between audit write and Stream start, durable `pending` audit + `running` executions rows remain. A reconciliation job (see §6.2.7 below) flips orphaned `pending` audit rows to `failure` with `reason: :lost_start` after a grace period; a companion sweep marks orphaned `executions` rows as `aborted_by_restart`. The audit trail never has a gap.
+- If the DB is unavailable at any point, the transaction rolls back — no group row, no per-target rows, no audit row, no stream. The user sees a clean error.
+- If the stream crashes after start but before completion, the audit entry is still `:success` for *submission*; per-target outcome is captured in each `executions.outcome` column and in the per-target journal entries. Submission audit ≠ completion audit.
+- Denied targets never produce execution records (`ADR-0005`). The audit entry's `params.denied_targets` is the sole authoritative record. This keeps the execution model semantically consistent: an `executions` row means *the integration was invoked for this node*.
 
-The alternative ordering — start the stream, then write audit — is rejected: a crash between those two steps leaves a side effect (possibly an outbound SSH connection, a remote process spawned, a cloud API call initiated) with no audit record. For an audit trail intended to satisfy compliance requirements (`RBAC-305`, `NFR-601`), that is incorrect.
+The alternative ordering — start the stream, then write audit — is rejected: a crash between those two steps leaves a side effect (an outbound SSH connection, a remote process spawned, a cloud API call initiated) with no audit record. For an audit trail intended to satisfy compliance requirements (`RBAC-305`, `NFR-601`), that is incorrect.
 
 ### 6.2.2 Audit reconciliation
 
@@ -129,37 +139,40 @@ Each check fails with an actionable reason (`FLOW-101`, `ERR-306`). The layered 
 
 ### 6.2.4 Stream GenServer
 
+One Stream GenServer per `execution_group_id`. It owns the runner and the per-target buffers; each per-target buffer corresponds to one `executions` row.
+
 ```elixir
 defmodule Vigil.Core.Execution.Stream do
   use GenServer
 
   # State
   defstruct [
-    :execution_id,
+    :execution_group_id,
     :integration_id,
     :plugin_module,
-    :targets,              # list of %{id, node_id, identity}
-    :runner_ref,            # reference to the plugin runner (port, task)
-    buffer: %{},           # per-target ring buffer of recent chunks
-    buffer_position: %{},  # monotonic position per target
+    :targets,              # %{execution_id => %{node_id, identity, outcome}}
+    :runner_ref,           # reference to the plugin runner (port, task)
+    buffer: %{},           # %{execution_id => ring buffer of recent chunks}
+    buffer_position: %{},  # %{execution_id => monotonic position}
+    bytes_written: %{},    # %{execution_id => uncompressed bytes; for DM-604 cap}
     finished_targets: %{},
-    overall_status: :running,
     grace_timer: nil
   ]
 
-  def start_link(args), do: GenServer.start_link(__MODULE__, args, name: via(args.execution_id))
+  def start_link(args),
+    do: GenServer.start_link(__MODULE__, args, name: via(args.execution_group_id))
 
-  def get_buffer(execution_id, since_position) do
-    GenServer.call(via(execution_id), {:backfill, since_position})
+  def get_buffer(execution_group_id, execution_id, since_position) do
+    GenServer.call(via(execution_group_id), {:backfill, execution_id, since_position})
   end
 
-  def abort(execution_id, principal) do
-    GenServer.call(via(execution_id), {:abort, principal})
+  def abort(execution_group_id, principal) do
+    GenServer.call(via(execution_group_id), {:abort, principal})
   end
 end
 ```
 
-State lives entirely in the GenServer. LiveView disconnects don't affect it (`STR-203`).
+State lives entirely in the GenServer. LiveView disconnects don't affect it (`STR-203`). The per-target keying by `execution_id` (the per-node row's primary key) means subscribers can address a single target's stream without parsing positional indexes.
 
 ### 6.2.5 Buffering
 
@@ -187,28 +200,43 @@ Multiple LiveViews (same user, multiple tabs; different users viewing the same e
 
 ### 6.2.7 Completion and persistence
 
-When the runner exits:
+When the runner exits, the Stream GenServer finalizes each per-target row independently:
 
-1. The GenServer finalizes per-target exit status and duration.
-2. Concatenates buffered + any overflow-to-disk chunks into the full transcript per target.
-3. gzips and writes to `execution_targets.transcript`.
-4. Updates `executions.ended_at` and `overall_status`.
-5. Writes journal entries — one per target (`EXEC-201`, `TYPE-EXEC-003`, `DM-601`).
-6. Broadcasts `{:ended, overall_status}` on the stream topic.
-7. Sets a grace timer (default 60s) before terminating. The grace window allows late LiveView reconnections to get the final `:ended` event without refetching from DB.
+1. For each target, derive per-target `outcome`, `exit_status`, `duration_ms`.
+2. Gzip the in-memory buffer (truncated to 50 MB uncompressed per `DM-604` if it exceeded the cap — see [§4.5.3](04-data-model.md#453-transcript-size-cap-and-truncation-dm-604)).
+3. In **one DB transaction per group**:
+   - `UPDATE executions SET outcome=$1, exit_status=$2, ended_at=$3, duration_ms=$4, streaming_state='closed', transcript=$5, transcript_meta=$6, partial_transcript=NULL WHERE id=$7` — repeated per target via `Ecto.Multi` so all per-target rows reach their terminal state atomically.
+   - One `INSERT INTO journal_entries` per target (`DM-606`, `EXEC-201`).
+4. Broadcast `{:ended, execution_id, outcome}` on `execution_stream:<execution_id>` for each target; broadcast `{:group_ended, execution_group_id}` on `execution_group:<group_id>` after the last target closes.
+5. Set a grace timer (default 60 s) before terminating. The grace window allows late LiveView reconnections to get the final `:ended` events without refetching from DB.
 
 ```elixir
 def handle_info({:runner_done, final_state}, state) do
   state = finalize(state, final_state)
-  persist_transcripts!(state)
-  write_journal_entries!(state)
-  Phoenix.PubSub.broadcast(..., {:ended, state.overall_status})
+
+  Repo.transaction(fn ->
+    Enum.each(state.targets, fn {execution_id, target} ->
+      Vigil.Core.Executions.finalize_row(execution_id, target, state.buffer[execution_id])
+      Vigil.Core.Journal.write_for_execution(execution_id, target)
+    end)
+  end)
+
+  Enum.each(state.targets, fn {execution_id, target} ->
+    Phoenix.PubSub.broadcast(Vigil.PubSub, "execution_stream:#{execution_id}",
+                             {:ended, execution_id, target.outcome})
+  end)
+  Phoenix.PubSub.broadcast(Vigil.PubSub,
+    "execution_group:#{state.execution_group_id}",
+    {:group_ended, state.execution_group_id})
+
   timer = Process.send_after(self(), :grace_expired, 60_000)
-  {:noreply, %{state | grace_timer: timer, overall_status: final_state.overall_status}}
+  {:noreply, %{state | grace_timer: timer}}
 end
 
 def handle_info(:grace_expired, state), do: {:stop, :normal, state}
 ```
+
+Per `RBAC-109` and `ADR-0005`, denied nodes do not appear in this loop at all — they were never given an `executions` row.
 
 ### 6.2.8 In-flight durability across restarts (`EXEC-106`)
 
@@ -241,9 +269,9 @@ defmodule Vigil.Core.Execution.Supervisor do
 end
 ```
 
-`Stream.drain/2` flushes buffered output to a `execution_targets.partial_transcript` column, preserves runner state metadata, and closes cleanly. Runners that support cancellation (Bolt, Ansible via signal) are told to stop cleanly; runners that don't (SSH with a live session) leave the remote process running — we can't reach into a remote host to stop it, so we accept that caveat and document it.
+`Stream.drain/2` flushes buffered output to a `executions.partial_transcript` column, preserves runner state metadata, and closes cleanly. Runners that support cancellation (Bolt, Ansible via signal) are told to stop cleanly; runners that don't (SSH with a live session) leave the remote process running — we can't reach into a remote host to stop it, so we accept that caveat and document it.
 
-**Periodic checkpointing for long executions.** For executions exceeding a configurable window (default 60 seconds of runtime), the Stream GenServer snapshots its buffer to `execution_targets.partial_transcript` every 30 seconds via `send_after(self(), :checkpoint, 30_000)`:
+**Periodic checkpointing for long executions.** For executions exceeding a configurable window (default 60 seconds of runtime), the Stream GenServer snapshots its buffer to `executions.partial_transcript` every 30 seconds via `send_after(self(), :checkpoint, 30_000)`:
 
 ```elixir
 def handle_info(:checkpoint, state) do
@@ -402,35 +430,48 @@ The Stream GenServer's `handle_call({:abort, principal}, ...)`:
 
 ## 6.7 Execution history and re-run
 
-Execution history queries are plain Ecto queries against `executions` and `execution_targets`:
+`DM-605` requires the execution list view to group rows by `execution_group_id`, showing one summary row per group. The query joins `execution_groups` with the aggregate query from [§4.5.4](04-data-model.md#454-aggregate-group-status-computed-not-stored):
 
 ```elixir
 def history(principal, filters) do
-  from(e in Execution,
+  from(g in ExecutionGroup,
+    as: :group,
     where: ^visibility_filter(principal),
-    order_by: [desc: e.started_at],
-    preload: [:targets]
+    order_by: [desc: g.submitted_at],
+    left_lateral_join: agg in subquery(group_aggregate_query()),
+    on: agg.execution_group_id == g.id,
+    select: %{group: g, summary: agg}
   )
   |> apply_filters(filters)
   |> Repo.paginate(...)
 end
 ```
 
-Re-run (`EXEC-204`, `DM-603`) is a UI affordance that pre-fills a new execution form with the historical submission's parameters. The user can edit targets and parameters before submitting. The new execution is entirely separate from the original — same submission flow, same validation.
+Expanding a group fetches its per-target rows: `from(e in Execution, where: e.execution_group_id == ^id, preload: :node)`.
+
+Re-run (`EXEC-204`, `DM-603`, `DM-605`) operates at three scopes:
+
+| Scope | Source | Behaviour |
+|-------|--------|-----------|
+| Re-run this target only | A single `executions` row | New single-target group; same artifact and parameters; target = original `node_id`. |
+| Re-run the entire group | `execution_groups.intended_targets` | New group; full original target intent re-used; RBAC re-evaluated at the new submission time, so the user may again see denials. |
+| Re-run failed only | `executions WHERE execution_group_id = $1 AND outcome != 'ok'` | New group; target list = the failed subset. |
+
+The new submission goes through the full validator (`§6.2.1`) — RBAC is *not* inherited (`ADR-0005`). If permissions have changed since the original run, the new dispatch reflects the current state.
 
 ## 6.8 Transcript retrieval
 
-After execution ends, transcripts are retrievable indefinitely (`STR-301`, `STR-302`, `EXEC-203`):
+After an execution row reaches terminal state, its transcript is retrievable indefinitely (`STR-301`, `STR-302`, `EXEC-203`):
 
 ```elixir
-def transcript(execution_target_id) do
-  from(et in ExecutionTarget, where: et.id == ^execution_target_id)
+def transcript(execution_id) do
+  from(e in Execution, where: e.id == ^execution_id, select: {e.transcript, e.transcript_meta})
   |> Repo.one!()
   |> decompress_transcript()
 end
 ```
 
-Transcript rendering uses the same LiveView component as the live stream, initialized from a static list of chunks. This keeps rendering consistent.
+If `transcript_meta.truncated` is true, the rendered view surfaces the truncation banner from `DM-604` ("output truncated at 50 MB; full output not persisted"). Transcript rendering uses the same LiveView component as the live stream, initialized from a static list of chunks — keeping rendering consistent between live and historical views.
 
 ## 6.9 Provisioning flows
 

@@ -211,9 +211,95 @@ If a user's groups don't match any mapping, they either get the configured defau
 - Local users remain authenticatable via their password hash.
 - External users have `password_hash = NULL` and cannot log in locally.
 - Break-glass local access remains available even when any IdP is down.
-- In EE, an admin can disable local auth entirely via a setting (`AUTH-106`); the UI then shows only IdP login buttons. CE always keeps local auth available as fallback.
+- In EE, an admin can disable local auth entirely via a setting (`AUTH-106`); the UI then shows only IdP login buttons. CE always keeps the break-glass admin account available as fallback.
 
 Sessions for already-authenticated users continue to work when the IdP is unavailable (`AUTH-056`, `AUTH-110`); only *new* logins via that IdP fail.
+
+### 8.1.8 The break-glass admin account (AUTH-009 / AUTH-106)
+
+`AUTH-009` requires a canonical break-glass path that survives IdP failure. `AUTH-106` (EE) extends this with an explicit operator decision to disable local auth — including the break-glass account — in exchange for owning an out-of-band recovery path.
+
+#### The protected user row
+
+A single row in `users` is marked as the break-glass admin via a non-NULL `is_break_glass` flag (defaulted true on the seeded admin, NULL otherwise — a partial unique index enforces "at most one"):
+
+```sql
+ALTER TABLE users ADD COLUMN is_break_glass BOOLEAN;
+CREATE UNIQUE INDEX users_break_glass_uniq ON users (tenant_id) WHERE is_break_glass IS TRUE;
+```
+
+The seed script (`priv/repo/seeds.exs`) ensures one such row exists per tenant on first boot. The platform refuses to start if the row is missing in CE — the absence is a critical-path configuration error, not a recoverable state.
+
+#### Invariants enforced at the data layer
+
+| Invariant | Enforcement |
+|-----------|-------------|
+| The break-glass account cannot be deleted | An Ecto changeset constraint rejects `delete/1` on a user with `is_break_glass = true`. A Postgres trigger raises on `DELETE FROM users WHERE is_break_glass = TRUE` as a defence-in-depth backstop. |
+| The break-glass account cannot be bound to an external IdP | The changeset rejects any update that sets `auth_source` to anything other than `'local'` on the break-glass row. The row's `auth_source` is permanently `'local'`. |
+| The break-glass account always retains the administrator role | A trigger on `user_roles` rejects any DELETE that would remove the last administrator role from a break-glass user. The "force" path requires a separate, audited maintenance command. |
+| At most one break-glass account per tenant | The partial unique index above. Attempting to set `is_break_glass = true` on a second row violates the index. |
+
+These rules apply to CE *always*. They apply to EE while local auth is enabled. When EE local auth is disabled via the `AUTH-106` setting, the break-glass row is preserved in the database but the auth path that consumes it is short-circuited — see [§8.1.8.4](#8184-ee-local-auth-disable-auth-106) below.
+
+#### 8.1.8.1 Distinct audit marker
+
+Every successful login produces an `audit_entries` row. Logins via the break-glass account additionally carry a marker in `params.break_glass = true` and a distinct action `auth.login.break_glass` (rather than the generic `auth.login`). The audit list view filters and styles these rows differently so a reviewer can identify break-glass use at a glance.
+
+```elixir
+defp record_login(user, conn) do
+  action = if user.is_break_glass, do: "auth.login.break_glass", else: "auth.login"
+  params = if user.is_break_glass, do: %{break_glass: true}, else: %{}
+
+  Vigil.Core.Audit.write_finalized(user, action, :success,
+                                   target_kind: "user", target_id: user.id,
+                                   params: params, request_meta: request_meta(conn))
+end
+```
+
+#### 8.1.8.2 Real-time admin alert
+
+`AUTH-009`: every break-glass login fires an alert to currently-active administrator sessions via the `admin_alerts` PubSub topic, *and* emits a structured log entry at `:warn` so external observability tooling can route it:
+
+```elixir
+def handle_break_glass_login(user, conn) do
+  Phoenix.PubSub.broadcast(Vigil.PubSub, "admin_alerts",
+    {:break_glass_login, %{user_id: user.id, occurred_at: DateTime.utc_now(),
+                            source_ip: get_peer(conn), user_agent: ua(conn)}})
+
+  Logger.warning("Break-glass account used",
+    event: "auth.break_glass.login",
+    user_id: user.id,
+    source_ip: get_peer(conn))
+end
+```
+
+Active admin LiveViews (`HealthDashboardLive`, `SettingsLive`, etc. — anything mounted in the `:admin` `live_session`) subscribe to `admin_alerts` on mount and render an inline toast / banner when a `:break_glass_login` event arrives. The alert remains visible until acknowledged.
+
+The structured log entry uses the `event` metadata field already defined in §2.7 so the JSON log line is filterable by `event = "auth.break_glass.login"` in any log aggregator.
+
+#### 8.1.8.3 UI badge in user management
+
+The user management LiveView annotates the break-glass row with a visible `BREAK-GLASS` badge and disables the row's delete / disable / change-auth-source affordances. The row cannot be hidden by a filter — administrators must always see that the account exists. Password rotation remains permitted (and is encouraged via documentation).
+
+#### 8.1.8.4 EE local-auth disable (AUTH-106)
+
+When an EE administrator sets `auth.local_auth_enabled = false`, two things happen:
+
+1. The `SessionPlug` short-circuits local logins with a clear error before reaching the password check — including for the break-glass account. The row remains in the database but is unreachable through the auth path.
+2. The setting change is itself recorded in the audit trail with a prominent action `auth.local_auth.disable`. The setting form requires the administrator to type an explicit confirmation phrase ("DISABLE BREAK-GLASS"), and a banner in the UI states the consequence: *the operator is now solely responsible for an out-of-band access path; if all IdPs fail and you have no host-level access, the platform is unreachable.*
+
+CE has no such setting — `auth.local_auth_enabled` is hard-coded to `true` and the UI does not present a control to change it. This is the structural difference between the two editions for `AUTH-009` vs. `AUTH-106`.
+
+#### 8.1.8.5 Seed-script behaviour
+
+On first boot, the seed script:
+
+1. Generates a random 24-character password for the break-glass admin.
+2. Prints the password *once* to STDOUT with a banner saying it will not be shown again.
+3. Stores the bcrypt/Argon2 hash in `users.password_hash`.
+4. Records an audit entry `auth.break_glass.created` with the user_id and the source ("seed-script").
+
+Operators are expected to rotate this password to one stored in their own secret manager before going live. A `mix vigil.rotate_break_glass_password` task is provided so the rotation does not require web-UI access.
 
 ## 8.2 Session management
 
@@ -374,18 +460,87 @@ For scheduled executions (EE FS EE-5), the resolved-targets fetch happens at *ru
 > **Decision: Resolve targets once in the submission pipeline, never in the evaluator.**
 > An earlier design called `Nodes.get/1` per target inside `target_matches?`. At 1000 targets this produced 1000 serial DB queries before the execution could even start — user-visible latency at scale and an interface-level defect that would be expensive to retrofit once the execution pipeline was built around it. Resolving once in the submission pipeline is the correct interface boundary: the evaluator is a pure function of `(permission, context)`.
 
-#### `command_matches?`
+#### `command_matches?` — glob allowlist / blocklist (EXEC-302 / EXEC-305)
 
-For execution artifacts, the command policy is a `MapSet` check with glob/regex matching:
+For execution artifacts, the command policy uses **glob syntax only** — regex is explicitly out of scope per `EXEC-302`. The grammar matches what operators have already learned from shell globbing:
+
+| Pattern element | Matches |
+|-----------------|---------|
+| literal text | exactly that text |
+| `?` | exactly one character within a single argument token |
+| `*` | any sequence of characters within a single argument token (does not cross whitespace boundaries) |
+| `**` | any sequence of characters across argument boundaries (can span multiple tokens) |
+
+Examples (from `EXEC-302`):
+
+- `systemctl restart *` permits `systemctl restart nginx`, `systemctl restart postgres`, but **not** `systemctl restart "nginx postgres"` as a single quoted argument (the `*` stops at whitespace).
+- `systemctl * nginx` permits `systemctl start nginx`, `systemctl restart nginx`, etc.
+- `systemctl ** nginx` would additionally permit `systemctl --user start nginx` (the `**` spans the flag and the subcommand).
+
+The compiler translates each pattern to a regex *once* at policy creation and stores the compiled pattern alongside the source. The hot-path matcher does a regex match, not a fresh glob parse:
+
+```elixir
+defmodule Vigil.Core.RBAC.GlobPolicy do
+  @doc """
+  Compiles a glob pattern to a regex. Called at policy write time, never on the hot path.
+  Rejects regex metacharacters in the source so operators don't accidentally pass a regex
+  expecting glob semantics.
+  """
+  def compile!(pattern) when is_binary(pattern) do
+    if contains_regex_metachars?(pattern),
+      do: raise(ArgumentError, "Allowlist patterns must use glob syntax, not regex. " <>
+                                "Offending pattern: #{inspect(pattern)}")
+
+    pattern
+    |> escape_regex_metachars()
+    |> translate_glob_to_regex()    # ? → ., * → [^[:space:]]*, ** → .*
+    |> then(&("^" <> &1 <> "$"))
+    |> Regex.compile!()
+  end
+end
+```
+
+The policy itself is two compiled lists per `role_permissions.command_policy`:
+
+```elixir
+%{
+  "allow" => [compiled_regex, ...],     # empty list => open (all commands permitted)
+  "deny"  => [compiled_regex, ...]
+}
+```
+
+The matcher applies `EXEC-302` "empty allowlist = open, non-empty = closed" and `EXEC-305` "block matches terminate" semantics in this order:
 
 ```elixir
 defp command_matches?(%{command_policy: nil}, _), do: true
 defp command_matches?(%{command_policy: %{"allow" => allow, "deny" => deny}}, %{artifact: a}) do
-  not Enum.any?(deny, &matches?(&1, a)) and Enum.any?(allow, &matches?(&1, a))
+  command_string = render_command(a)   # canonical "argv0 arg1 arg2 ..." form
+
+  cond do
+    # 1. Block patterns terminate first. A block match denies, full stop (EXEC-305).
+    Enum.any?(deny, &Regex.match?(&1, command_string)) ->
+      false
+
+    # 2. Empty allowlist = open. Any non-blocked command is permitted (EXEC-302).
+    allow == [] ->
+      true
+
+    # 3. Non-empty allowlist = closed. Command must match at least one allow pattern.
+    true ->
+      Enum.any?(allow, &Regex.match?(&1, command_string))
+  end
 end
 ```
 
-Denies take precedence over allows (`EXEC-305`).
+Order matters and is `EXEC-305`-mandated: block patterns are evaluated *after* the conceptual allowlist gate, but a block match terminates the evaluation chain with rejection. A command that matches both an allowlist entry and a block pattern is **denied** — block wins.
+
+#### Multi-role union (EXEC-303)
+
+A user with multiple roles receives the **union** of all matching allowlists across those roles. Concretely: when compiling the principal's effective permissions, the dispatcher merges every role's `command_policy.allow` list into a single flat list, and likewise for `command_policy.deny`. The union is computed once per principal and cached in the `PermissionCache` (see [§8.3.4](#834-compiled-permission-cache)).
+
+This matters for the open-vs-closed semantics: if any one of the user's roles has an empty allowlist for the integration, the union allowlist is empty *and the policy is "open"* — the broader role's grant subsumes the narrower role's restrictions. Operators who need closed-by-default semantics must ensure every role granting access to the integration carries a non-empty allowlist.
+
+Block patterns (`EXEC-305`) are unioned the same way and always apply — a block pattern in any role's policy applies to that user regardless of which role granted the underlying allow.
 
 ### 8.3.4 Compiled permission cache
 

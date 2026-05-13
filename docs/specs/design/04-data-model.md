@@ -33,21 +33,49 @@ Contexts are the boundary: LiveViews and controllers call `Vigil.Core.Inventory.
 
 ```sql
 CREATE TABLE nodes (
-  id               UUID PRIMARY KEY,
-  tenant_id        UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
-  canonical_name   TEXT NOT NULL,
-  identity_attrs   JSONB NOT NULL,        -- {certname, fqdn, hostname, primary_ip, ...}
-  first_seen_at    TIMESTAMPTZ NOT NULL,
-  last_seen_at     TIMESTAMPTZ NOT NULL,
-  deleted_at       TIMESTAMPTZ,           -- soft-delete when no source reports it
-  metadata         JSONB NOT NULL DEFAULT '{}'::jsonb,
-  CONSTRAINT nodes_canonical_unique UNIQUE (tenant_id, canonical_name)
+  id                    UUID PRIMARY KEY,
+  tenant_id             UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+  canonical_name        TEXT NOT NULL,
+  identity_attrs        JSONB NOT NULL,        -- {certname, fqdn, hostname, primary_ip, ...}
+  first_seen_at         TIMESTAMPTZ NOT NULL,
+  last_seen_at          TIMESTAMPTZ NOT NULL,
+  lifecycle_state       TEXT NOT NULL DEFAULT 'active',
+                                                -- 'active' | 'unreported' | 'decommissioned'
+  unreported_since      TIMESTAMPTZ,           -- set when transitioning to :unreported
+  decommissioned_at     TIMESTAMPTZ,           -- set when transitioning to :decommissioned
+  decommissioned_by     UUID REFERENCES users(id),
+  decommission_reason   TEXT,
+  metadata              JSONB NOT NULL DEFAULT '{}'::jsonb,
+  CONSTRAINT nodes_canonical_unique UNIQUE (tenant_id, canonical_name),
+  CONSTRAINT nodes_lifecycle_state_check
+    CHECK (lifecycle_state IN ('active', 'unreported', 'decommissioned'))
 );
 CREATE INDEX nodes_identity_attrs_gin ON nodes USING GIN (identity_attrs);
 CREATE INDEX nodes_last_seen_idx ON nodes (tenant_id, last_seen_at DESC);
+CREATE INDEX nodes_lifecycle_idx ON nodes (tenant_id, lifecycle_state);
 ```
 
 A `Node` row is the reconciled identity (`DM-001`). It is created on first observation and updated as identity attributes change. Canonical name is chosen per linking rules and persists unless manual override changes it.
+
+The `lifecycle_state` column replaces the previous `deleted_at` soft-delete pattern, encoding the three-state model from `DM-1102`:
+
+| State | Meaning | Trigger |
+|-------|---------|---------|
+| `active` | At least one integration currently reports this node. | Initial state on first observation. Restored from `unreported` when any integration re-reports the node. |
+| `unreported` | No integration currently reports this node; it was previously active. Identity retained; derived data is stale or absent. | Set by `Vigil.Core.Inventory.Linker` when an integration cache refresh drops the last attribution (see [§5.2.5](05-aggregation-and-caching.md#525-detecting-the-unreported-transition-dm-1109)). |
+| `decommissioned` | An administrator has explicitly tombstoned the node (`DM-1106`). | Explicit `Vigil.Core.Nodes.decommission/3` call. Releases identity claims in the linker index (`DM-1107`). Identity attrs preserved for historical Journal/Execution references. |
+
+State transitions are authoritative writes through `Vigil.Core.Nodes.transition_lifecycle/2`, which:
+
+1. Updates the row atomically.
+2. Stamps the matching timestamp column (`unreported_since` or `decommissioned_at`).
+3. Broadcasts `{:lifecycle, new_state, reason}` on the `node:lifecycle:<node_id>` PubSub topic so LiveViews repaint without polling.
+4. For `:decommissioned`, additionally invokes `GenServer.call(Vigil.Core.Inventory.Linker, {:decommission, node_id, principal})` to release identity claims (`DM-1107` — see [§5.2.7](05-aggregation-and-caching.md#527-decommission-releases-identity-claims)).
+
+The "Unreported nodes" administrator view (`DM-1109`) is a LiveView over `WHERE lifecycle_state = 'unreported' ORDER BY unreported_since DESC` joined with `node_sources` to show which integration last attributed each node and when. The view supports per-row "decommission" and "investigate" affordances.
+
+> **Decision: Lifecycle state is a column, not a separate table or event log.**
+> Each transition is recorded in the audit trail (`RBAC-301`) — that is the durable history. The column captures the *current* state, which is what every query needs. A separate `node_lifecycle_events` table was rejected: it would duplicate audit semantics, and "what state is this node in *now*" is the only question hot paths ask. The timestamp columns (`unreported_since`, `decommissioned_at`) give "how long has it been there" without a join.
 
 ### 4.3.2 `node_sources` — per-source observation
 
@@ -212,51 +240,127 @@ CREATE TABLE journal_note_revisions (
 
 ## 4.5 Execution and transcript schemas
 
-```sql
-CREATE TABLE executions (
-  id               UUID PRIMARY KEY,
-  tenant_id        UUID NOT NULL,
-  initiated_by     UUID NOT NULL REFERENCES users(id),
-  integration_id   UUID NOT NULL REFERENCES integrations(id),
-  plugin_id        TEXT NOT NULL,
-  artifact_kind    TEXT NOT NULL,     -- 'command' | 'task' | 'playbook' | 'plan'
-  artifact_name    TEXT,              -- task/playbook/plan name, or command
-  parameters       JSONB NOT NULL DEFAULT '{}'::jsonb,
-  target_spec      JSONB NOT NULL,    -- what the user selected: nodes, groups, filter
-  resolved_targets JSONB NOT NULL,    -- list of node_ids at submission time
-  started_at       TIMESTAMPTZ NOT NULL,
-  ended_at         TIMESTAMPTZ,
-  overall_status   TEXT NOT NULL DEFAULT 'running',  -- 'submitted' | 'running' | 'succeeded'
-                                                      -- | 'failed' | 'aborted' | 'timed_out'
-                                                      -- | 'failed_to_start' | 'aborted_by_restart'
-  metadata         JSONB NOT NULL DEFAULT '{}'::jsonb   -- drain_state, checkpoint info
-);
-CREATE INDEX executions_initiated_idx ON executions (initiated_by, started_at DESC);
-CREATE INDEX executions_integration_idx ON executions (integration_id, started_at DESC);
+Per **ADR-0004**, the execution model is **one row per target node**, with all rows from the same dispatch sharing a stable `execution_group_id`. A 100-node dispatch creates 100 rows atomically; a single-node dispatch creates a group of one. Per **ADR-0005**, nodes denied by RBAC before dispatch produce **no row in `executions`** — the audit trail (`audit_entries`) is the sole authoritative record of denied nodes.
 
-CREATE TABLE execution_targets (
-  id                 UUID PRIMARY KEY,
-  execution_id       UUID NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
-  node_id            UUID REFERENCES nodes(id) ON DELETE SET NULL,
-  target_identity    JSONB NOT NULL,
-  exit_status        INTEGER,
-  duration_ms        INTEGER,
-  transcript         BYTEA,              -- compressed stdout+stderr (final)
-  partial_transcript BYTEA,              -- compressed checkpoint snapshots (EXEC-106)
-  transcript_meta    JSONB NOT NULL DEFAULT '{}'::jsonb,  -- { stdout_bytes, stderr_bytes,
-                                                           --   truncated, last_checkpoint_at,
-                                                           --   restart_event_count }
-  finished_at        TIMESTAMPTZ
+This inverts the more familiar "one job + many job-events" model. The rationale (per ADR-0004): every per-node consumer in the system — the journal entry (`DM-606`), the node detail page's execution history, RBAC target-scope evaluation — is now a 1:1 lookup, not an iteration over an embedded array.
+
+### 4.5.1 `execution_groups` — dispatch metadata shared across targets
+
+```sql
+CREATE TABLE execution_groups (
+  id                 UUID PRIMARY KEY,             -- the execution_group_id
+  tenant_id          UUID NOT NULL,
+  initiated_by       UUID NOT NULL REFERENCES users(id),
+  integration_id     UUID NOT NULL REFERENCES integrations(id),
+  plugin_id          TEXT NOT NULL,
+  artifact_kind      TEXT NOT NULL,        -- 'command' | 'task' | 'playbook' | 'plan'
+  artifact_name      TEXT,
+  parameters         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  target_spec        JSONB NOT NULL,       -- what the user selected: nodes, groups, filter
+  intended_targets   JSONB NOT NULL,       -- full original target list (incl. denied) for re-run
+  dispatched_count   INTEGER NOT NULL,     -- count of executions rows actually created
+  denied_count       INTEGER NOT NULL DEFAULT 0,  -- count of pre-dispatch denials (per ADR-0005)
+  submitted_at       TIMESTAMPTZ NOT NULL,
+  metadata           JSONB NOT NULL DEFAULT '{}'::jsonb
 );
-CREATE INDEX execution_targets_exec_idx ON execution_targets (execution_id);
-CREATE INDEX execution_targets_node_idx ON execution_targets (node_id, finished_at DESC);
+CREATE INDEX execution_groups_user_idx       ON execution_groups (initiated_by, submitted_at DESC);
+CREATE INDEX execution_groups_integration_idx ON execution_groups (integration_id, submitted_at DESC);
 ```
 
-`partial_transcript` holds gzipped snapshots written at checkpoint intervals (30s default, see design/06 §6.2.8) during long executions. On successful completion, `transcript` is written and `partial_transcript` is cleared. On restart-induced abort, `partial_transcript` is promoted to `transcript` and the execution is marked `aborted_by_restart`. This is the mechanism that satisfies `EXEC-106`.
+`execution_groups` carries the per-dispatch state that is identical across every targeted node: who submitted it, which integration, what was the original target intent, when it was submitted. It is the stable, URL-safe external reference for "I ran this action" (`DM-601a`). It does **not** carry per-target outcome or timing — those live on each `executions` row.
 
-Transcript is stored as gzipped bytea. At 10,000 nodes, typical execution against a group of 50 produces 50 rows; transcripts are typically under a megabyte each. Streaming output is *not* held indefinitely in memory by the LiveView — it lives in the `Vigil.Core.Execution.Stream` GenServer's buffer during the run, and is flushed to the DB at completion.
+`intended_targets` preserves the full original target list (including nodes that were ultimately denied by RBAC). This is what `RBAC-109` requires the audit trail to record; storing it here as well lets "re-run group" reconstruct the original user intent without joining audit. `dispatched_count` and `denied_count` together always sum to `length(intended_targets)`, providing an O(1) source for the execution list view's per-group summary.
 
-Retention: configurable per `DM-1102` via `settings.retention.executions_days`. Default unbounded (the PRD sets the default; operators override).
+### 4.5.2 `executions` — one row per target node
+
+```sql
+CREATE TABLE executions (
+  id                    UUID PRIMARY KEY,
+  execution_group_id    UUID NOT NULL REFERENCES execution_groups(id) ON DELETE CASCADE,
+  tenant_id             UUID NOT NULL,
+  node_id               UUID REFERENCES nodes(id) ON DELETE SET NULL,
+  target_identity       JSONB NOT NULL,        -- the integration-side identity that was dispatched
+  outcome               TEXT NOT NULL DEFAULT 'running',
+                                                -- 'running' | 'ok' | 'changed' | 'failed'
+                                                -- | 'timed_out' | 'unreachable'
+                                                -- | 'aborted' | 'aborted_by_restart'
+                                                -- | 'failed_to_start'
+  streaming_state       TEXT NOT NULL DEFAULT 'live',  -- 'live' | 'closed'
+  exit_status           INTEGER,
+  started_at            TIMESTAMPTZ NOT NULL,
+  ended_at              TIMESTAMPTZ,
+  duration_ms           INTEGER,
+  transcript            BYTEA,                 -- gzipped stdout+stderr; capped at 50 MB
+  transcript_meta       JSONB NOT NULL DEFAULT '{}'::jsonb,
+                                                -- { stdout_bytes, stderr_bytes,
+                                                --   truncated, truncated_at_bytes,
+                                                --   last_checkpoint_at, restart_event_count }
+  partial_transcript    BYTEA,                 -- gzipped checkpoint snapshot (EXEC-106)
+  metadata              JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX executions_group_idx      ON executions (execution_group_id);
+CREATE INDEX executions_node_idx       ON executions (node_id, started_at DESC);
+CREATE INDEX executions_outcome_idx    ON executions (execution_group_id, outcome);
+CREATE INDEX executions_running_idx    ON executions (streaming_state)
+                                       WHERE streaming_state = 'live';
+```
+
+`DM-601` and `ADR-0005`: an `executions` row exists only for a node that was actually dispatched. **Denied nodes do not appear here at all** — they appear in `audit_entries.params.denied_targets` for the group's submission audit entry. This means a 100-node dispatch with 10 RBAC denials creates exactly 90 `executions` rows.
+
+The `outcome` column is the per-target terminal state. `streaming_state` tracks whether the row is still receiving live output; the index over `WHERE streaming_state = 'live'` supports a fast "what's running right now" query without scanning completed rows.
+
+`partial_transcript` holds gzipped checkpoint snapshots written during long executions (default every 30 s — see design/06 §6.2.8). On clean completion `transcript` is written and `partial_transcript` is cleared. On restart-induced abort, `partial_transcript` is promoted to `transcript` and `outcome` is set to `aborted_by_restart`. This is the mechanism that satisfies `EXEC-106`.
+
+### 4.5.3 Transcript size cap and truncation (DM-604)
+
+`DM-604` requires a configurable per-record cap (default 50 MB) with an explicit truncation marker. The Stream GenServer (design/06 §6.2.4) tracks bytes written per target. On crossing the cap:
+
+1. Output continues to flow to subscribers (the user keeps seeing output in the UI), but new bytes are *not* appended to the buffer that will be persisted.
+2. `transcript_meta.truncated` is set to `true` and `transcript_meta.truncated_at_bytes` records the cap.
+3. A sentinel chunk `[--- transcript truncated at 50 MB; further output not persisted ---]` is appended to the buffer.
+4. The runner is not killed — `DM-604` says truncation is not an error.
+
+On completion, the gzipped persisted bytes will be smaller than 50 MB (gzip compresses well), but the cap is enforced on *uncompressed* size to keep the contract intuitive. The cap is overridable per integration via `executions.transcript_cap_bytes` in `settings`.
+
+### 4.5.4 Aggregate group status (computed, not stored)
+
+The group's aggregate "status" is a view over the `executions` rows for that group — derivable in a single indexed query (`executions_outcome_idx` above):
+
+```sql
+SELECT execution_group_id,
+       COUNT(*) FILTER (WHERE outcome = 'ok')             AS ok_count,
+       COUNT(*) FILTER (WHERE outcome = 'failed')          AS failed_count,
+       COUNT(*) FILTER (WHERE outcome = 'unreachable')     AS unreachable_count,
+       COUNT(*) FILTER (WHERE streaming_state = 'live')    AS still_running,
+       COUNT(*)                                            AS dispatched
+FROM executions
+WHERE execution_group_id = $1
+GROUP BY execution_group_id;
+```
+
+This drives the execution list view's per-group summary row required by `DM-605` (`47 ok / 2 failed / 1 unreachable`). It is *not* denormalized into `execution_groups` — recomputing is cheap (the group's row count is bounded by `intended_targets`), and a denormalized status would be a write coordinator between every Stream GenServer.
+
+The "group is finished" boolean is `still_running = 0`. A LiveView watching a group subscribes to one PubSub topic per running `executions` row's `execution_stream:<id>`, and the LiveView's local aggregate updates when each row's `streaming_state` transitions to `closed`.
+
+### 4.5.5 Streaming output into the transcript field
+
+`EXEC-101` requires live streaming to the UI; `DM-604` requires the final transcript to be persisted. The two are decoupled:
+
+- **During the run** the Stream GenServer holds the per-target buffer in memory (ring buffer, default 128 KB) and broadcasts each chunk on `execution_stream:<execution_id>`. The `executions.transcript` column is `NULL`.
+- **Checkpoints** (every 30 s after the 60 s warm-up window) write the *cumulative* buffer to `partial_transcript` as a single gzipped blob. This is an `UPDATE` with `partial_transcript = $1` — no `bytea_append`, no row growth pathology.
+- **Completion** writes the full buffer to `transcript` in one final `UPDATE` and clears `partial_transcript`. The Stream GenServer also updates `outcome`, `exit_status`, `ended_at`, `duration_ms`, and `streaming_state = 'closed'` in the same statement so the row reaches its terminal state atomically.
+
+The Postgres `bytea` field is *not* used as an incremental append target. PostgreSQL TOAST handles large columns fine, but `UPDATE` on a bytea column writes the entire new value — checkpointing into the column is acceptable because checkpoints are every 30 s, not per-chunk. Per-chunk persistence would generate one row update per output line, which is the wrong write pattern.
+
+### 4.5.6 Per-target journal entries (DM-606)
+
+`DM-606` mandates exactly one Journal Entry per target node per execution. Because each `executions` row already is per-node, this is a 1:1 insert at completion. The journal write happens in the same `Repo.transaction/1` as the final `executions` update so the two cannot drift.
+
+### 4.5.7 Why per-row scale is fine
+
+Transcripts are gzipped `bytea`. A representative 100-node dispatch produces 100 rows; typical per-target transcripts are 1–10 KB (a `systemctl status` line) up to a few MB (a verbose Bolt task). PostgreSQL TOAST stores oversized values out-of-line transparently; index hot paths (`executions_group_idx`, `executions_node_idx`) touch only the small columns. At the 10,000-node target and a busy operator's 100 dispatches per day × 50 nodes mean, the table grows by ~5,000 rows/day — well inside what a single PostgreSQL instance handles unpartitioned for years.
+
+Retention is per `DM-1103` via `settings.retention.executions_days` (default unbounded). The retention worker deletes finalized `executions` rows older than the retention window; `ON DELETE CASCADE` from `execution_groups` cleans the group row when its last `executions` row is deleted.
 
 ## 4.6 Users, roles, permissions
 
@@ -490,7 +594,7 @@ A test-only Ecto telemetry handler inspects every SQL query fired during the tes
 ```elixir
 defmodule Vigil.Test.TenantScopeCheck do
   @tenant_scoped_tables ~w(nodes node_sources groups group_sources journal_entries
-                           executions execution_targets audit_entries integrations
+                           execution_groups executions audit_entries integrations
                            users sessions api_tokens roles)
 
   def attach do
@@ -519,7 +623,7 @@ At 10,000 nodes:
 - `nodes` table: 10,000 rows. Trivial.
 - `node_sources`: up to 10,000 × (number of integrations per node) ≈ 30,000 rows. Trivial.
 - `journal_entries`: low volume — only executions and manual notes. Hundreds per day in a busy deployment. No partitioning needed.
-- `executions` + `execution_targets`: low volume. Hundreds per day in typical deployments.
+- `execution_groups` + `executions`: low volume. Hundreds of dispatches per day in typical deployments, fanning out to ~50× as many `executions` rows under the per-node model (`ADR-0004`).
 - `audit_entries`: bounded by user activity. Low volume, retained longer.
 
 The database is small by design. All high-volume data (events, reports, facts, inventory) lives in the source tools and is fetched on-demand. PostgreSQL stores only what Vigil originates or must persist for accountability.

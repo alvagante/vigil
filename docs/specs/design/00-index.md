@@ -55,8 +55,12 @@ Phoenix LiveView removes the SPA layer entirely: no separate REST / WebSocket cl
 | 9 | [09-liveview-ui.md](09-liveview-ui.md) | LiveView topology, routing, component library, UX patterns |
 | 10 | [10-mcp-and-ai.md](10-mcp-and-ai.md) | MCP server, AI inference, bring-your-own-keys |
 | 11 | [11-puppet-integration.md](11-puppet-integration.md) | Detailed design of the Puppet plugin |
+| 14 | [14-ansible-integration.md](14-ansible-integration.md) | Detailed design of the Ansible plugin |
+| 15 | [15-proxmox-integration.md](15-proxmox-integration.md) | Detailed design of the Proxmox plugin |
 | 12 | [12-deployment-and-ops.md](12-deployment-and-ops.md) | Releases, deployment, observability, upgrades |
 | 13 | [13-testing-strategy.md](13-testing-strategy.md) | How the PRD testing philosophy is realized |
+
+> The numeric ordering 11 → 14 → 15 → 12 → 13 in the reading order is intentional: plugin design docs cluster together (Puppet was originally §11 and the new Ansible/Proxmox docs slot in next to it), with platform-wide Deployment and Testing closing the document.
 
 ---
 
@@ -89,7 +93,10 @@ Every requirement prefix from the PRD has a section in this document that descri
 |------------|----------------|
 | `EXS`, `NFR` performance targets | [01](01-overview.md), [02](02-application-topology.md), [05](05-aggregation-and-caching.md), [12](12-deployment-and-ops.md) |
 | `PLUG` plugin contract | [03](03-plugin-framework.md) |
-| `PUP`, `BOLT`, `ANS`, `SSH`, `PROX`, `AWS`, `AZ` | [11](11-puppet-integration.md) plus per-plugin designs |
+| `PUP` | [11](11-puppet-integration.md) |
+| `ANS` | [14](14-ansible-integration.md) |
+| `PROX`, `PROV-COM` (Proxmox-relevant) | [15](15-proxmox-integration.md) |
+| `BOLT`, `SSH`, `AWS`, `AZ` | per-plugin designs to be added in their respective Phase 1 (Bolt, SSH) and Phase 2a (AWS, Azure) feature sets |
 | `INV`, `CACHE`, `PERF`, `RES` | [05](05-aggregation-and-caching.md) |
 | `EXEC`, `STR` | [06](06-execution-and-streaming.md) |
 | `JRN`, `TYPE-JRN` | [07](07-journal-and-events.md) |

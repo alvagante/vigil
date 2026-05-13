@@ -46,7 +46,11 @@ Vigil.Application
 ├── Finch                                    # HTTP connection pools
 ├── Vigil.Telemetry.Supervisor               # telemetry reporter, metrics
 ├── Vigil.Core.Supervisor                    # domain services
-│   ├── Vigil.Core.Inventory.Linker           # identity linking worker pool
+│   ├── Vigil.Core.Inventory.Linker           # owns multi-attribute inverted index
+│   │                                         #   (ETS tables linker_certname / fqdn /
+│   │                                         #   hostname / ip → node_id) per ADR-0003;
+│   │                                         #   subscribes to inventory:cache_refreshed;
+│   │                                         #   rebuilds index from DB on init.
 │   ├── Vigil.Core.Execution.Supervisor       # execution streams (DynamicSupervisor)
 │   ├── Vigil.Core.Cache                      # ETS cache server
 │   ├── Vigil.Core.Cache.Janitor              # TTL sweeper
@@ -167,6 +171,8 @@ PubSub is the primary cross-process eventing channel. Topics and their payloads 
 | `integration_health:<id>` | Plugin health worker | Status dashboard, admin LiveViews | `{:health, status, capabilities, diagnostic}` |
 | `integration_health:all` | Plugin health worker | Metrics collector | Rollup events |
 | `inventory_changed:<integration_id>` | Plugin inventory refresh | Inventory LiveView, linker | `{:inventory_changed, :full | :partial, changed_ids}` |
+| `inventory:cache_refreshed` | Integration cache refresh completion | `Vigil.Core.Inventory.Linker` | `{:integration_cache_refreshed, integration_id, observations}` — drives incremental linker index update + unreported detection per ADR-0003 |
+| `node:lifecycle:<node_id>` | `Vigil.Core.Nodes.transition_lifecycle/2` | Inventory LiveView, NodeDetailLive | `{:lifecycle, new_state, reason}` for `:active | :unreported | :decommissioned` transitions per DM-1102 |
 | `node:<node_id>` | Execution stream | Node detail LiveView | `{:fact_update, diff}` |
 | `execution_stream:<id>` | Execution stream GenServer | Execution LiveView, audit | `{:chunk, stream, text}`, `{:ended, status}` |
 | `provisioning:<op_id>` | Provisioning tracker | Provisioning LiveView | `{:state, new_state}`, `{:ended, result}` |

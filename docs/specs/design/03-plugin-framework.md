@@ -270,11 +270,13 @@ Identical concurrent requests for the same data collapse to one upstream call. I
 
 ### 3.3.5 Caching
 
-The dispatcher consults `Vigil.Core.Cache` (ETS-backed) for cacheable calls. Cache keys include the principal's permission scope (`CACHE-006`) so a narrower-scoped principal doesn't receive data computed for a wider-scoped principal:
+The dispatcher consults `Vigil.Core.Cache` (ETS-backed) for cacheable calls. Per the revised `CACHE-006`, cache entries hold **full, unfiltered integration responses** keyed by integration + capability + call arguments — *not* by principal. The dispatcher returns the unfiltered cache entry to its caller; RBAC target-scope filtering happens in the application layer at presentation time (see design/05 §5.3.2):
 
 ```elixir
-key = {integration_id, capability, op, hash_of(args), principal_scope_hash}
+key = {integration_id, capability, op, hash_of(args)}
 ```
+
+Users with different permission scopes hit the same ETS entry, so the cache hit rate is per-integration, not per-principal. The dispatcher *does* still call the RBAC pre-flight at §3.3.1 to gate whether the principal may invoke this capability *at all* on this integration — that is a yes/no decision, separate from the per-target visibility filtering that the application layer applies after the cache lookup.
 
 TTLs come from plugin defaults, overridable per integration per capability (`CACHE-001`, `CACHE-002`). On cache miss, the fetched result is stored with a computed expires-at. On read, if the source is currently unhealthy (checked via the PubSub health cache), stale entries are returned with `freshness: :stale` (`CACHE-005`).
 
@@ -456,7 +458,124 @@ The plugin installation UI and operator documentation **MUST** state the trust m
 
 This is the honest version of the trust model. It is also the minimum that lets operators make an informed decision.
 
-## 3.10 Versioning and compatibility
+## 3.10 Supplementary capabilities and UI extension slots
+
+PRD §6.7 (`PLUG-801`..`PLUG-811`, `PLUG-901`..`PLUG-904`) introduces three runtime UI extension slots that any plugin — first-party or community — may declare. The platform mounts the plugin's declared UI module into the slot at request time, gated by RBAC and by whether the plugin is linked to the node being viewed.
+
+### 3.10.1 Slot types
+
+| Slot | Renders at | Mount predicate |
+|------|------------|----------------|
+| `node_tab` | A tab appended to the node detail page after the generic tabs | Plugin is linked to this node *and* the user has the slot's RBAC permission |
+| `global_page` | A sidebar entry under the integration's nav section, with its own URL | Integration is enabled (renders an unavailable state if unhealthy per `PLUG-904`) *and* the user has the slot's RBAC permission |
+| `node_action` | A button/menu item in the node action bar | Plugin is linked to this node *and* the user has the slot's RBAC permission |
+
+`PLUG-806` mandates: when permission is absent, the slot is **hidden entirely** — never greyed out, never rendered as a disabled placeholder.
+
+### 3.10.2 Manifest declaration
+
+Supplementary capabilities are declared by adding a `supplementary_capabilities/0` callback to the plugin behaviour. The platform discovers these at the same startup pass as generic capability declarations.
+
+```elixir
+defmodule Vigil.Plugin do
+  # ... existing callbacks ...
+
+  @callback supplementary_capabilities() :: [Vigil.Plugin.SupplementaryCapability.t()]
+  @optional_callbacks supplementary_capabilities: 0
+end
+
+defmodule Vigil.Plugin.SupplementaryCapability do
+  @enforce_keys [:id, :slot, :display_name, :rbac_permission, :ui_module]
+  defstruct id: nil,                  # namespaced: "puppet:catalog_diff" (PLUG-808)
+            slot: nil,                # :node_tab | :global_page | :node_action
+            display_name: nil,
+            description: nil,
+            rbac_permission: nil,     # e.g., "puppet:catalog_diff:view"
+            data_contract: nil,       # Vigil.Plugin.Schema describing data shape
+            params_schema: nil,       # Vigil.Plugin.Schema describing accepted params
+            ui_module: nil,           # module implementing Phoenix.LiveComponent
+            cache_ttl_ms: nil,        # per-capability cache TTL (PLUG-809)
+            timeout_ms: nil           # per-capability call timeout (PLUG-809)
+end
+```
+
+A Puppet plugin example:
+
+```elixir
+def supplementary_capabilities do
+  [
+    %SupplementaryCapability{
+      id: "puppet:catalog_diff",
+      slot: :node_tab,
+      display_name: "Catalog diff",
+      rbac_permission: "puppet:catalog_diff:view",
+      data_contract: catalog_diff_schema(),
+      ui_module: Vigil.Integrations.Puppet.UI.CatalogDiffTab
+    },
+    %SupplementaryCapability{
+      id: "puppet:hiera_lookup",
+      slot: :global_page,
+      display_name: "Hiera key lookup",
+      rbac_permission: "puppet:hiera_lookup:view",
+      params_schema: hiera_lookup_params_schema(),
+      ui_module: Vigil.Integrations.Puppet.UI.HieraLookupPage
+    }
+  ]
+end
+```
+
+### 3.10.3 The slot registry
+
+On plugin discovery, the platform builds `Vigil.Plugin.SlotRegistry` — an ETS table keyed by slot type with the discovered capability declarations:
+
+```elixir
+defmodule Vigil.Plugin.SlotRegistry do
+  # ETS contents (keyed by :node_tab | :global_page | :node_action):
+  #   {slot_type, [%SupplementaryCapability{plugin_id: ..., integration_id: ...}, ...]}
+
+  def for_slot(:node_tab,    %{node_id: node_id, principal: p}), do: filtered(:node_tab, node_id, p)
+  def for_slot(:node_action, %{node_id: node_id, principal: p}), do: filtered(:node_action, node_id, p)
+  def for_slot(:global_page, %{principal: p}),                   do: filtered(:global_page, nil, p)
+
+  defp filtered(slot, maybe_node_id, principal) do
+    slot
+    |> all_for_slot()
+    |> Enum.filter(&plugin_linked_to_node?(&1, maybe_node_id))   # nil for global_page
+    |> Enum.filter(&Vigil.Core.RBAC.permitted?(principal, &1.rbac_permission))
+    |> Enum.filter(&integration_enabled?/1)
+  end
+end
+```
+
+The "plugin linked to this node" predicate consults `node_sources` for the viewed `node_id`: a `node_tab` from a Puppet plugin is shown only if the node has a `node_sources` row attributing it to that Puppet integration. For `global_page` this predicate is a no-op (always true — global pages are not per-node).
+
+`PLUG-904` (plugin disabled or unhealthy): the registry filters out `node_tab` and `node_action` entries from disabled integrations; `global_page` entries remain but the dispatch path detects the unavailable integration and the LiveView renders the unavailable state instead of mounting the plugin's UI module.
+
+### 3.10.4 Per-capability data calls
+
+Supplementary capabilities follow the same dispatcher path as generic capabilities (`PLUG-809`):
+
+```elixir
+Vigil.Plugin.Dispatcher.supplementary_call(
+  integration_id,
+  "puppet:catalog_diff",
+  args,
+  opts
+)
+```
+
+The dispatcher applies the same RBAC gate, circuit breaker, concurrency limiter, request coalescer, cache lookup, and deadline propagation as for generic capability calls. A failing supplementary capability does **not** affect rendering of generic tabs or other plugins' supplementary capabilities on the same page (`PLUG-809`) — each LiveComponent owns its own loading/error state per [§9.3.3](09-liveview-ui.md#933-livecomponents-for-encapsulated-state).
+
+### 3.10.5 Conformance
+
+`PLUG-811` extends the conformance suite (§3.7) with a supplementary-capability fixture:
+
+- Asserts each declared capability ID is namespaced (`<plugin_id>:<rest>`).
+- Asserts the `ui_module` is loaded and implements `Phoenix.LiveComponent`.
+- Asserts the `rbac_permission` follows the platform's permission-name convention.
+- Exercises the data-contract round-trip with a synthetic call to confirm the response matches `data_contract`.
+
+## 3.11 Versioning and compatibility
 
 `PLUG-601` through `PLUG-603`: the plugin contract is versioned as a semantic version, exposed as `Vigil.Plugin.contract_version/0`. The platform supports the current and previous major version concurrently.
 

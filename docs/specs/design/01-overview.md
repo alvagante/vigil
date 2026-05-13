@@ -126,22 +126,22 @@ The umbrella application is split into these child applications, described fully
 | `vigil_plugin` | Plugin behaviour definitions, dispatch, lifecycle, conformance suite. No specific plugins. |
 | `vigil_web` | Phoenix endpoint, LiveView modules, controllers, API (including MCP). Depends on core + plugin. |
 | `vigil_auth_oidc` | CE OIDC provider (single IdP, literal group-to-role mapping). Implements `Vigil.Auth.Provider`. |
-| `vigil_integrations_puppet` | Puppet plugin. |
-| `vigil_integrations_bolt` | Bolt plugin. |
-| `vigil_integrations_ansible` | Ansible plugin. |
-| `vigil_integrations_ssh` | SSH plugin. |
-| `vigil_integrations_proxmox` | Proxmox plugin. |
-| `vigil_integrations_aws` | AWS plugin. |
-| `vigil_integrations_azure` | Azure plugin. |
+| `vigil_integrations_puppet` | Puppet plugin (Phase 1 CE). |
+| `vigil_integrations_bolt` | Bolt plugin (Phase 1 CE). |
+| `vigil_integrations_ansible` | Ansible plugin (Phase 1 CE). |
+| `vigil_integrations_ssh` | SSH plugin (Phase 1 CE). |
+| `vigil_integrations_proxmox` | Proxmox plugin (Phase 1 CE). |
+| `vigil_integrations_aws` | AWS plugin — **Phase 2a (deferred)**. Umbrella app does not exist in Phase 1; the integration ships in the same umbrella once Phase 2a begins. |
+| `vigil_integrations_azure` | Azure plugin — **Phase 2a (deferred)**. As above. |
 | `vigil` (root) | Orchestrating application that starts all the children in the right order. |
+
+Phase 1 CE ships the five integration apps marked above. AWS and Azure are deferred to **Phase 2a** per PRD §20 — they remain spec'd in PRD section 9 as the authoritative reference for when those apps are built. Enterprise Edition features (SAML, LDAP, multi-IdP OIDC, HA, approvals, SIEM export, scheduled executions, webhooks, custom dashboards, multi-tenancy) live in a separate `vigil_enterprise` umbrella outside this repository and are delivered in **Phase 2b**, not concurrently with Phase 1. They register into CE's extension points at runtime. CE works fully without EE loaded.
 
 Each integration is its own OTP application because:
 
-1. Dependencies are isolated — AWS SDK brings heavy transitive deps the SSH plugin does not need.
+1. Dependencies are isolated — AWS SDK (when added in Phase 2a) brings heavy transitive deps the SSH plugin does not need.
 2. Per-plugin enable/disable (`PLUG-206`) is a matter of starting or stopping the child application.
 3. Community plugins follow exactly the same pattern — an OTP application declaring a dependency on `vigil_plugin`.
-
-Enterprise Edition features (SAML, LDAP, multi-IdP OIDC, HA, approvals, SIEM export, scheduled executions, webhooks, custom dashboards, multi-tenancy) live in a separate `vigil_enterprise` umbrella outside this repository. They register into CE's extension points at runtime. CE works fully without EE loaded.
 
 ## 1.6 Cross-cutting principles
 

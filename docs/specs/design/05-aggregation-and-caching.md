@@ -72,7 +72,7 @@ The same progressive rendering pattern is used for the **journal timeline** (see
 
 ## 5.2 Identity linking
 
-The linker is the single most delicate piece of domain logic. It decides whether two observations from different sources describe the same node. PRD sections 11.1.2 and 12.1.1 constrain the behaviour; this section defines the implementation.
+The linker is the single most delicate piece of domain logic. It decides whether two observations from different sources describe the same node. PRD sections 11.1.2 and 12.1.1 constrain the behaviour; **ADR-0003** prescribes the algorithm; this section defines the implementation.
 
 ### 5.2.1 Linker inputs
 
@@ -89,41 +89,162 @@ The linker is the single most delicate piece of domain logic. It decides whether
 
 Confidence comes from the plugin's `identity_confidence/0` (`TYPE-INV-005`, `PUP-106`). Certname is canonical for Puppet; FQDN is strong; IP is unstable.
 
-### 5.2.2 Linker algorithm
+### 5.2.2 The multi-attribute inverted index
+
+`INV-110` prohibits quadratic comparison; **ADR-0003** specifies a multi-attribute inverted index maintained in memory. For each linkable attribute, a map from normalized attribute value to canonical `node_id`:
 
 ```
-For each incoming observation:
-1. Build candidate keys from its identity_attrs (certname, fqdn, hostname, primary_ip).
-2. Consult the candidate index (below) to find existing nodes with matching attrs.
-3. Filter candidates by applicable linking rules, in priority order.
-4. Weight candidates by source confidence.
-5. If exactly one candidate:
-     link the observation to that node (upsert node_sources).
-6. If zero candidates:
-     create a new node with a fresh UUID; insert node_sources.
-7. If multiple candidates:
-     check manual_links for a decisive link/unlink override.
-     if override present → apply it.
-     if no override → record a conflict; leave the observation un-linked; raise to admin via 'unresolved links' view.
+certname_index : normalized_string → node_id
+fqdn_index     : normalized_string → node_id
+hostname_index : normalized_string → node_id
+ip_index       : normalized_string → node_id
 ```
 
-The candidate index is a set of Postgres indexes on JSONB paths:
+The index is owned by `Vigil.Core.Inventory.Linker`, a single supervised process under `Vigil.Core.Supervisor` (see [§2.2](02-application-topology.md#22-top-level-supervision-tree)). Storage:
 
-```sql
--- Partial, expression-based GIN indexes for fast lookup:
-CREATE INDEX nodes_certname_idx ON nodes ((identity_attrs->>'certname'))
-  WHERE identity_attrs ? 'certname';
-CREATE INDEX nodes_fqdn_idx ON nodes ((identity_attrs->>'fqdn'))
-  WHERE identity_attrs ? 'fqdn';
-CREATE INDEX nodes_hostname_idx ON nodes (lower(identity_attrs->>'hostname'))
-  WHERE identity_attrs ? 'hostname';
-CREATE INDEX nodes_primary_ip_idx ON nodes ((identity_attrs->>'primary_ip'))
-  WHERE identity_attrs ? 'primary_ip';
+```elixir
+defmodule Vigil.Core.Inventory.Linker.Index do
+  # One ETS table per attribute, owned by the Linker process.
+  # :set semantics; named tables; protected access (only the Linker writes).
+
+  @tables [:linker_certname, :linker_fqdn, :linker_hostname, :linker_ip]
+
+  def init do
+    for t <- @tables do
+      :ets.new(t, [:set, :named_table, :protected, read_concurrency: true])
+    end
+  end
+
+  def lookup(:certname, value), do: ets_get(:linker_certname, normalize(:certname, value))
+  def lookup(:fqdn,     value), do: ets_get(:linker_fqdn,     normalize(:fqdn, value))
+  def lookup(:hostname, value), do: ets_get(:linker_hostname, normalize(:hostname, value))
+  def lookup(:ip,       value), do: ets_get(:linker_ip,       normalize(:ip, value))
+
+  defp normalize(:certname, v), do: String.downcase(v)
+  defp normalize(:fqdn,     v), do: v |> String.downcase() |> String.trim_trailing(".")
+  defp normalize(:hostname, v), do: String.downcase(v)
+  defp normalize(:ip,       v), do: canonicalize_ip(v)   # :inet.parse_address → back to string
+end
 ```
 
-Lookups on these indexes are O(log n). For 10,000 nodes, the full linking pass runs in under a second.
+ETS tables hold the live index; the Linker GenServer is the single writer. The tables are `:protected` so any process can read for fast lookups without GenServer round-trips, but only the Linker mutates them — preserving consistency under concurrent integration cache refresh callbacks.
 
-### 5.2.3 Linking rules
+### 5.2.3 Linker algorithm
+
+For each incoming observation from an integration cache refresh:
+
+```
+1. Walk the attribute cascade (certname → fqdn → hostname → ip,
+   subject to per-rule enable flags and source confidence).
+2. For each present attribute, point-lookup the corresponding ETS table.
+3. Collect the set of node_ids returned. Three cases:
+
+   (a) Empty set:
+       Create a new canonical node row (Vigil.Core.Nodes.insert/1),
+       insert all attribute → node_id entries into the index,
+       upsert node_sources for this (node_id, integration_id).
+
+   (b) One node_id:
+       Upsert node_sources; add any new attribute claims from this
+       observation to the index under the existing node_id.
+
+   (c) Multiple distinct node_ids:
+       Check manual_links for a decisive link/unlink override.
+       If override → apply it.
+       Otherwise → write a link_conflicts row; do NOT link.
+```
+
+Each step is a point operation: ETS `:ets.lookup/2` is O(1); the Postgres upsert is keyed by `(node_id, integration_id)` with a unique index. Linking an incoming batch of M records costs O(M × A) where A = 4 (the cascade depth) — linear, independent of total inventory size N. `INV-110` is satisfied.
+
+### 5.2.4 Incremental update on cache refresh
+
+The integration cache layer (see [§5.3](#53-cache-architecture)) publishes `{:integration_cache_refreshed, integration_id, observations}` on PubSub when a refresh completes. The Linker subscribes on startup:
+
+```elixir
+defmodule Vigil.Core.Inventory.Linker do
+  use GenServer
+
+  def init(_opts) do
+    Index.init()
+    rebuild_from_db()       # see §5.2.6
+    Phoenix.PubSub.subscribe(Vigil.PubSub, "inventory:cache_refreshed")
+    {:ok, %{}}
+  end
+
+  def handle_info({:integration_cache_refreshed, integration_id, observations}, state) do
+    Enum.each(observations, &link_one(&1, integration_id))
+    detect_unreported(integration_id, observations)   # see §5.2.5
+    {:noreply, state}
+  end
+
+  def handle_call({:decommission, node_id, principal}, _from, state) do
+    release_claims(node_id)
+    {:reply, :ok, state}
+  end
+end
+```
+
+The linker never scans the full inventory. Each refresh costs O(refresh_size), never O(total_nodes). Refreshes from different integrations are serialized by the GenServer's mailbox — index mutations are interleaved at message boundaries, never partially observed.
+
+### 5.2.5 Detecting the Unreported transition (DM-1109)
+
+After each integration cache refresh, the Linker compares the set of node_ids the integration *previously* reported with the set in the current refresh:
+
+```elixir
+defp detect_unreported(integration_id, current_observations) do
+  current_ids   = MapSet.new(current_observations, & &1.node_id)
+  previous_ids  = Vigil.Core.Nodes.ids_currently_attributed_to(integration_id)
+  dropped_ids   = MapSet.difference(previous_ids, current_ids)
+
+  for node_id <- dropped_ids do
+    case Vigil.Core.Nodes.remove_source(node_id, integration_id) do
+      {:ok, %{remaining_sources: 0}} ->
+        # No integration reports this node any more.
+        Vigil.Core.Nodes.transition_lifecycle(node_id, :unreported)
+      {:ok, _} ->
+        # Still reported by at least one other integration; lifecycle unchanged.
+        :ok
+    end
+  end
+end
+```
+
+`Unreported` is a derived signal — a node stays `Active` as long as any integration reports it (`DM-1101a`). Transitions to `Decommissioned` are *only* triggered by explicit admin action via `decommission/2`.
+
+### 5.2.6 Startup rebuild
+
+`ADR-0003`: the index is reconstructed at startup from persisted identity records. The Linker's `init/1` runs `rebuild_from_db/0` synchronously before subscribing to refresh events:
+
+```elixir
+defp rebuild_from_db do
+  Vigil.Core.Nodes.stream_active_and_unreported()
+  |> Enum.each(fn node ->
+    for {attr, value} <- node.identity_attrs, attr in [:certname, :fqdn, :hostname, :ip] do
+      Index.put(attr, value, node.id)
+    end
+  end)
+end
+```
+
+`Decommissioned` nodes are deliberately excluded — their identity claims have been released (`DM-1107`). At 10,000 nodes × 4 attributes, the rebuild is ~40,000 ETS inserts: well under one second on commodity hardware. The index is never persisted; PostgreSQL is the durable substrate, ETS is the lookup substrate.
+
+### 5.2.7 Decommission releases identity claims
+
+When an administrator decommissions a node (`DM-1106`), the Linker erases all attribute claims attributed to that `node_id` so that a future node reported at the same address links fresh (`DM-1107`):
+
+```elixir
+defp release_claims(node_id) do
+  for t <- [:linker_certname, :linker_fqdn, :linker_hostname, :linker_ip] do
+    :ets.match_delete(t, {:_, node_id})
+  end
+end
+```
+
+`:ets.match_delete/2` scans the table but the operation is bounded by table size, which is bounded by the index attribute count × 10,000 nodes (= ~40,000 entries). At this size, the operation completes in milliseconds. The Linker holds a write lock on the index for the duration via its GenServer mailbox, so concurrent refreshes serialize behind the decommission.
+
+After release, the lifecycle state is set to `:decommissioned` (see [§4.3.1](04-data-model.md#431-nodes--canonical-node-records)) and the identity attributes are retained on the row for historical journal references.
+
+### 5.2.8 Linking rules
 
 Rules are stored in `linking_rules`. A rule is a JSONB document:
 
@@ -143,16 +264,18 @@ Default ruleset (`INV-104`):
 
 Rules are immutable once created; edits create new rules with a new priority. This makes `INV-107` (manual overrides persist across rule changes) mechanically simple — overrides are decisions, rules are heuristics, and decisions always win.
 
-### 5.2.4 Batching and full-recompute
+Rule changes do not invalidate the in-memory index — the index records *which node_id claims which value*, not *why*. A rule change only affects what new observations are allowed to claim against. An optional admin-triggered "rebuild index" pass (a one-shot GenServer call) is the way to re-evaluate existing identity records against a changed ruleset.
+
+### 5.2.9 Batching and full-recompute
 
 Linking runs in two modes:
 
-- **Per-observation (online):** Every incoming observation is linked immediately as part of the inventory refresh.
-- **Full recompute (maintenance):** An admin can trigger a full re-link — e.g., after a ruleset change. This is a background Oban job that processes all `node_sources` in batches, respecting manual overrides.
+- **Per-observation (online):** Every incoming observation in an integration cache refresh is point-looked-up and linked immediately, in the Linker's GenServer mailbox order.
+- **Full recompute (maintenance):** An admin can trigger a full re-link after a ruleset change. This is a background Oban job in the `maintenance` queue that streams all persisted identity records, clears the index, and rebuilds it observation-by-observation. Manual overrides are applied last so they always win.
 
-For the 10,000-node target at full recompute, the batched pipeline processes ~5,000 observations per second on modest hardware. `INV-110`'s "no quadratic blowup" is satisfied by indexed lookups.
+At the 10,000-node target, a full recompute runs in seconds; the platform stays serving via cached data, since the index is still queryable mid-rebuild — the Linker holds a "rebuild in progress" flag and writes to a shadow set of ETS tables that are atomically swapped at the end.
 
-### 5.2.5 Conflict surfacing
+### 5.2.10 Conflict surfacing
 
 When multiple candidates match and no manual override applies, the observation is flagged as a conflict:
 
@@ -172,6 +295,10 @@ The admin "unresolved links" view (`INV-109`) is a LiveView over this table. Res
 
 ## 5.3 Cache architecture
 
+`CACHE-006` (revised) prescribes a **shared, unfiltered integration cache**. The cache holds the full integration response keyed by integration + capability; RBAC target-scope filtering is applied at *presentation time*, after the cache lookup and before the response leaves the application layer. Cache entries are shared across all users who have access to the integration; per-principal cache entries are not used.
+
+This inverts the earlier per-principal-scoped design. The justification: at the 10,000-node target, filtering a single full inventory against a user's permission scope in memory takes microseconds, while maintaining one cache entry per principal multiplies memory use and cache misses by the number of distinct permission scopes in the deployment.
+
 ### 5.3.1 ETS layout
 
 One ETS table per `{integration_id, capability}`:
@@ -189,14 +316,17 @@ One ETS table per `{integration_id, capability}`:
 Key format:
 
 ```
-{action, args_hash, principal_scope_hash}
+{action, args_hash}
 ```
+
+`args_hash` covers the non-principal arguments to the capability call (filter parameters, since-cursor, etc.). It does **not** include any principal identity — that is the structural difference from the previous design.
 
 Value format:
 
 ```elixir
 %CacheEntry{
-  data: term,
+  data: term,                          # FULL unfiltered integration response
+  source_attribution: %{...},          # plugin_id + integration_id for every record
   stored_at: DateTime,
   expires_at: DateTime,
   source_health_at_store: :healthy | :degraded,
@@ -204,21 +334,38 @@ Value format:
 }
 ```
 
-Per-integration table sizing is bounded by `CACHE-008`. A Janitor GenServer periodically sweeps expired entries and evicts LRU when size exceeds the budget.
+Per-integration table sizing is bounded by `CACHE-008` and must accommodate the full integration inventory, not paginated slices — pagination is applied *after* RBAC filtering at presentation time. A Janitor GenServer periodically sweeps expired entries and evicts LRU when size exceeds the budget.
 
-### 5.3.2 Cache key scoping per principal
+### 5.3.2 Presentation-time RBAC filtering
 
-`CACHE-006` requires principal-scoped cache keys. The principal's scope hash is derived from its roles' target selectors that affect the capability:
+The dispatcher returns the unfiltered `%CacheEntry{}` to the application layer. The application layer applies the principal's target-scope filter before serializing the response:
 
 ```elixir
-defp principal_scope_hash(principal, integration_id, capability) do
-  principal
-  |> Vigil.Core.RBAC.scope_filters_for(integration_id, capability)
-  |> :erlang.phash2()
+defmodule Vigil.Core.Inventory do
+  def list_nodes(%Scope{} = scope, filter, opts) do
+    integrations = visible_integrations(scope, :inventory)
+
+    integrations
+    |> aggregate_unfiltered(filter, opts)               # cache hits return full data
+    |> Vigil.Core.RBAC.filter_targets(scope, :nodes)    # apply per-principal target scope
+    |> apply_user_filter(filter)
+    |> paginate(opts.cursor, opts.page_size)
+  end
 end
 ```
 
-Users with the same effective scope share cache entries. Users with different scopes get independent cache entries. Admins with unrestricted scope hash to a distinct value.
+`Vigil.Core.RBAC.filter_targets/3` resolves the principal's effective target selectors once (cached in the per-process `Scope` for the request's lifetime) and runs the in-memory predicate over the result set. For 10,000 candidate nodes against a typical scope filter (a group membership predicate or a tag match), this is a sub-millisecond operation. See [§8.3](08-auth-rbac.md) for the target-scope evaluation algorithm — `RBAC-108` requires the per-target evaluation to be a constant number of data-store queries, which the presentation-time filter satisfies by issuing one bounded query to resolve the principal's scope and zero queries during the in-memory filter.
+
+> **Decision: Cache stores integration truth; the application layer enforces visibility.**
+> Two consequences worth surfacing:
+> 1. Two users with different scopes hit the same ETS entry — the cache hit rate is now per-integration, not per-principal. At the target deployment scale this is a meaningful win.
+> 2. The cache must hold the full integration inventory. Capability calls that the plugin paginates server-side must be unpaginated on entry to the cache (the cache stores the *whole* result set assembled from cursors), so that presentation-time filtering operates against the same universe regardless of which user fetched first.
+
+### 5.3.3 Pagination is post-filter
+
+Because the cache holds full results, pagination is a *post-filter* concern. The application layer computes the filtered, sorted result, then applies cursor-based pagination on the filtered output. Users with narrower scopes see fewer pages, not fewer items per page — which is the right behaviour for "the user restricted to web-servers should not see other nodes anywhere in inventory" (`RBAC-107`).
+
+A LiveView paginating through filtered output does not re-issue the cache lookup per page — the application layer holds the filtered, sorted list in the LiveView's assigns and slices it per page transition. The cache is consulted only when the integration data is stale (TTL expiry) or the filter parameters change.
 
 ### 5.3.3 Freshness model
 
@@ -330,9 +477,78 @@ Probes are intentionally lightweight (`HEALTH-003`, `PLUG-113`): token-validate,
 > **Decision: The per-integration GenServer health worker is the canonical liveness probe mechanism. Oban is used for maintenance tasks only.**
 > `HEALTH-005` requires a single owner for continuous per-integration probing. The per-integration `Health` GenServer is that owner — it holds the tick timer, the ring-buffer history, and the per-capability probe logic. The Oban `maintenance` queue (noted in design/02 §2.3 and design/12 §12.2) is reserved for lower-frequency work with retention, recomputation, or snapshot semantics (e.g., 24h-scale cache cleanup, weekly retention enforcement, cold-start warmer bootstrap). Oban **MUST NOT** schedule health-probe jobs of the same cadence as the GenServer ticker — that would produce double-firing against integrations already under health-probe load. The `maintenance` queue's minimum frequency for any job is `60s`, and no maintenance job's purpose overlaps with live health probing.
 
-### 5.6.1 Flapping detection
+### 5.6.1 Flapping detection (HEALTH-104/105)
 
-Health history is kept in a ring buffer (last N samples, configurable). If the status oscillates between `:healthy` and `:unhealthy` too often, a flapping flag is raised in the status dashboard (`HEALTH-104`, `PLUG-114`).
+`HEALTH-104` defines flapping as **3 or more healthy↔unhealthy transitions within a rolling 30-minute window** (both thresholds configurable). `HEALTH-105` defines the four-state model the dashboard renders.
+
+The per-integration `Health` GenServer owns the state machine. Two pieces of state are added beyond the simple ring buffer:
+
+```elixir
+defmodule Vigil.Integrations.Health.State do
+  defstruct integration_id: nil,
+            current: :unknown,           # :healthy | :degraded | :unhealthy | :flapping
+            last_probe_status: :unknown, # :healthy | :degraded | :unhealthy
+            # Sliding window of timestamps of healthy↔unhealthy transitions only.
+            # Degraded↔healthy and degraded↔unhealthy are NOT counted — flapping is
+            # defined against the binary healthy/unhealthy axis per HEALTH-104.
+            transitions: :queue.new(),
+            window_ms: 30 * 60 * 1000,
+            flap_threshold: 3,
+            capabilities: %{}             # per-capability status from the probe
+end
+```
+
+On each probe result:
+
+```elixir
+def handle_info(:probe, state) do
+  result = run_probe(state.integration_id)             # {:healthy | :degraded | :unhealthy, caps}
+
+  new_status     = headline_status(result)              # collapse capability map to one
+  is_transition? = transition_on_binary_axis?(state.last_probe_status, new_status)
+
+  transitions =
+    if is_transition?,
+      do: :queue.in(monotonic_now_ms(), state.transitions),
+      else: state.transitions
+
+  transitions = trim_outside_window(transitions, state.window_ms)
+  flap_count  = :queue.len(transitions)
+  flapping?   = flap_count >= state.flap_threshold
+
+  current =
+    cond do
+      flapping?                   -> :flapping
+      new_status == :degraded     -> :degraded
+      new_status == :unhealthy    -> :unhealthy
+      true                        -> :healthy
+    end
+
+  emit_telemetry(state.integration_id, current, flap_count)
+  publish_health(state.integration_id, current, result.capabilities, flap_count)
+  schedule_next_probe()
+
+  {:noreply, %{state | current: current,
+                       last_probe_status: new_status,
+                       transitions: transitions,
+                       capabilities: result.capabilities}}
+end
+
+defp transition_on_binary_axis?(:healthy, :unhealthy), do: true
+defp transition_on_binary_axis?(:unhealthy, :healthy), do: true
+defp transition_on_binary_axis?(_, _),                 do: false
+```
+
+The key design choices:
+
+- **Erlang `:queue` over a fixed-size ring buffer.** The window is *time-based* (30 min), not count-based. Storing only transition *timestamps* (not every probe result) bounds memory at `flap_count` integers — ~3-10 timestamps in practice. A naive "store every probe sample" approach would carry 60 entries (one every 30 s × 30 min) per integration with no semantic gain.
+- **`trim_outside_window/2` is O(transitions_in_queue).** It dequeues entries older than `now - window_ms` from the front. Since the queue length is bounded by the flap threshold under steady-state flapping (older transitions trim before new ones arrive), each tick costs O(1) amortised.
+- **Flapping is binary axis only.** A degraded↔healthy oscillation is *not* flapping — it is intermittent degradation, surfaced via the degraded state and the per-capability detail panel (`HEALTH-105`). This matches `HEALTH-104`'s prose: "three or more healthy↔unhealthy transitions."
+- **The four-state aggregation is a `cond` in priority order.** `flapping` wins over `unhealthy` wins over `degraded` wins over `healthy`. This is the order the dashboard card needs (`HEALTH-105`).
+
+The published health payload on `integration_health:<id>` carries `{current, capabilities, flap_count}` so the dashboard card can render the headline status, the per-capability detail panel, and the "N state changes in the last 30 min" flap indicator (`HEALTH-105` requirement (c)) without any further query.
+
+When flapping resolves — the queue trims below the threshold during a stable period — the state transitions back to whatever the latest probe says (`:healthy`, `:degraded`, or `:unhealthy`) and a `health.flapping_resolved` telemetry event is emitted for alerting integrations.
 
 ### 5.6.2 Degraded state detection
 

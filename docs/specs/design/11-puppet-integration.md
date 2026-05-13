@@ -310,34 +310,73 @@ The UI renders each section with color coding (additions green, removals red, ch
 
 ### 11.3.5 Configuration — Environments and code deployment
 
+`PUP-504` (revised): the plugin supports **exactly two r10k / Code Manager operations** — deploy a single named environment, or deploy all environments. Module-level deploys (`r10k deploy module`) are explicitly out of scope and not exposed in the UI. The interface intentionally has no parameters beyond the environment name; there is no per-module variant.
+
 ```elixir
 def list_environments(integration_id) do
   Puppetserver.Client.list_environments(integration_id)
-  |> enrich_with_deploy_metadata()
+  |> enrich_with_deploy_metadata()       # last_deploy_at, last_deploy_by, last_outcome
 end
 
 def flush_environment_cache(integration_id, environment) do
   Puppetserver.Client.flush_environment_cache(integration_id, environment)
 end
 
-def deploy_environment(integration_id, environment, principal) do
-  method = config(integration_id).code_deploy.method
+@doc "Deploy a single named environment (PUP-504(a))."
+def deploy_environment(integration_id, environment, principal)
+    when is_binary(environment) and environment != "" do
+  do_deploy(integration_id, {:single, environment}, principal)
+end
 
-  case method do
-    :webhook ->
-      deploy_via_webhook(integration_id, environment, principal)
-    :code_manager ->
-      deploy_via_code_manager_api(integration_id, environment, principal)
-    :remote_exec ->
-      deploy_via_exec_integration(integration_id, environment, principal)
-  end
-  |> record_deployment_journal_entry(integration_id, environment, principal)
+@doc "Deploy all environments (PUP-504(b)). Same RBAC permission as deploy_environment/3."
+def deploy_all_environments(integration_id, principal) do
+  do_deploy(integration_id, :all, principal)
+end
+
+defp do_deploy(integration_id, scope, principal) do
+  method = config(integration_id).code_deploy.method   # :code_manager | :r10k_webhook | :remote_exec
+
+  result =
+    case method do
+      :code_manager  -> deploy_via_code_manager_api(integration_id, scope, principal)
+      :r10k_webhook  -> deploy_via_webhook(integration_id, scope, principal)
+      :remote_exec   -> deploy_via_exec_integration(integration_id, scope, principal)
+    end
+
+  record_deployment_journal_entry(result, integration_id, scope, principal)
+  result
 end
 ```
 
-`PUP-506` permits deployment via a sibling execution integration. The plugin doesn't implement its own SSH — it calls `Vigil.Plugin.Dispatcher.call(exec_int_id, :execution, :run_command, %{command: "r10k deploy environment <env>"})`. This is a clean reuse of the execution platform (`NFR-301` — single RBAC enforcement).
+Notable interface choices:
 
-`PUP-507`, `PUP-508`: deployment progress is reported via PubSub (same pattern as executions), and the action is gated by the `puppet:environment:deploy` permission.
+- **No module deploy.** There is no `deploy_module/3` function and no UI affordance for module deploys. Operators who need per-module deploys do them via the underlying tooling outside Vigil. The Vigil model treats environment-level deploys as the unit of code change.
+- **Deploy-all uses the same RBAC permission as deploy-single.** Per `PUP-509`, both operations require `puppet:environment:deploy`. There is no separate "bulk deploy" permission — the operational distinction is captured by the confirmation modal (deploy-all carries a higher-severity confirmation since it affects more environments), not by the permission model.
+- **`PUP-507` (remote-exec fallback):** when the `:remote_exec` method is selected, the plugin calls `Vigil.Plugin.Dispatcher.call(exec_int_id, :execution, :run_command, %{command: "r10k deploy environment <env>"})` against a sibling execution integration. The plugin does **not** implement its own SSH or shell capability for this — clean reuse of the execution platform (`NFR-301`, single RBAC enforcement). For deploy-all, the command is `r10k deploy environment --all`.
+
+#### Deployment outcome as journal entry (PUP-508)
+
+Every deploy invocation records a journal entry against the Puppet integration capturing the outcome. The journal entry is *not* tied to any single node — it is an integration-scoped entry that surfaces in the global timeline filtered by source = puppet, and in the per-environment view of `puppet:environment_manager` (see [§11.3.7](#1137-supplementary-capabilities)).
+
+```elixir
+defp record_deployment_journal_entry({outcome, detail}, integration_id, scope, principal) do
+  Vigil.Core.Journal.insert_integration_entry(%{
+    integration_id: integration_id,
+    occurred_at: DateTime.utc_now(),
+    entry_type: "puppet.environment.deploy",
+    severity: outcome_severity(outcome),
+    summary: summary_for(scope, outcome),
+    detail: Map.merge(detail, %{scope: scope, initiated_by: principal.id}),
+    group_key: deploy_group_key(scope, detail)
+  })
+end
+
+defp outcome_severity(:ok),       do: :informational
+defp outcome_severity(:partial),  do: :warning
+defp outcome_severity(:failed),   do: :error
+```
+
+Progress (live deploy output, when the `:remote_exec` method is in use) is streamed via the same execution PubSub pipeline as a regular execution — the deploy LiveView mounts the execution Stream GenServer for the underlying `r10k deploy ...` command and renders it inline. On completion, the deploy LiveView writes the consolidated journal entry above; the execution row itself is also persisted normally and is reachable via the back-reference in the journal entry's `detail.execution_id`.
 
 ### 11.3.6 Events and Reports
 
@@ -394,6 +433,53 @@ Each event is normalized with:
 Reports are fetched on-demand via the Reports capability. When the user navigates to a report detail view, the full report is fetched from PuppetDB and rendered. No local storage of reports or events — PuppetDB is the source of truth.
 
 > **Note:** There is no EventPoller, no webhook handler for journal ingestion, and no checkpoint tracking. Events are fetched fresh from PuppetDB each time the journal is viewed. PuppetDB's own retention policy governs how far back events are available.
+
+### 11.3.7 Supplementary capabilities
+
+Per PRD §6.7 (`PLUG-801`..`PLUG-811`) and the manifest declaration described in design/03 §3.10, the Puppet plugin declares seven supplementary capabilities. Each is independently RBAC-gated and hidden entirely when the user lacks the required permission (`PLUG-806`).
+
+```elixir
+defmodule Vigil.Integrations.Puppet do
+  @behaviour Vigil.Plugin
+
+  @impl Vigil.Plugin
+  def supplementary_capabilities do
+    [
+      cap("puppet:catalog_view",            :node_tab,    "Catalog",
+          "puppet:catalog_view:view",       UI.CatalogViewTab),
+      cap("puppet:catalog_diff",            :node_action, "Catalog diff",
+          "puppet:catalog_diff:run",        UI.CatalogDiffAction),
+      cap("puppet:hiera_lookup",            :node_tab,    "Hiera lookup",
+          "puppet:hiera_lookup:view",       UI.HieraLookupTab),
+      cap("puppet:hiera_explorer",          :global_page, "Hiera explorer",
+          "puppet:hiera_explorer:view",     UI.HieraExplorerPage),
+      cap("puppet:node_list_by_environment",:global_page, "Nodes by environment",
+          "puppet:node_list:view",          UI.NodeListByEnvironmentPage),
+      cap("puppet:code_analysis",           :global_page, "Code analysis",
+          "puppet:code_analysis:view",      UI.CodeAnalysisPage),
+      cap("puppet:environment_manager",     :global_page, "Environments",
+          "puppet:environment:view",        UI.EnvironmentManagerPage)
+    ]
+  end
+end
+```
+
+| Capability ID | Slot | UI module | Data source | RBAC permission |
+|---------------|------|-----------|-------------|-----------------|
+| `puppet:catalog_view` | `node_tab` | `Vigil.Integrations.Puppet.UI.CatalogViewTab` | `Puppetserver.Client.compile_catalog/3` (§11.2.2) — cached per `{node, environment, code_version}` | `puppet:catalog_view:view` |
+| `puppet:catalog_diff` | `node_action` | `Vigil.Integrations.Puppet.UI.CatalogDiffAction` | Two `compile_catalog` calls + diff via `Vigil.Integrations.Puppet.CatalogDiff` | `puppet:catalog_diff:run` |
+| `puppet:hiera_lookup` | `node_tab` | `Vigil.Integrations.Puppet.UI.HieraLookupTab` | `Hiera.Reader.lookup/3` with node facts as the lookup context | `puppet:hiera_lookup:view` |
+| `puppet:hiera_explorer` | `global_page` | `Vigil.Integrations.Puppet.UI.HieraExplorerPage` | `Hiera.UsageAnalyzer` cross-referenced with current values from `Hiera.Reader` | `puppet:hiera_explorer:view` |
+| `puppet:node_list_by_environment` | `global_page` | `Vigil.Integrations.Puppet.UI.NodeListByEnvironmentPage` | PQL: `nodes { ... } order by catalog_environment, certname` | `puppet:node_list:view` |
+| `puppet:code_analysis` | `global_page` | `Vigil.Integrations.Puppet.UI.CodeAnalysisPage` | `Hiera.UsageAnalyzer` results (orphan keys, unused classes, etc.) | `puppet:code_analysis:view` |
+| `puppet:environment_manager` | `global_page` | `Vigil.Integrations.Puppet.UI.EnvironmentManagerPage` | `list_environments/1` (§11.3.5) + recent deploy journal entries | `puppet:environment:view` (read) + `puppet:environment:deploy` (action) |
+
+Slot-mount rules per design/03 §3.10:
+
+- `node_tab` and `node_action` slots mount only when the Puppet plugin is linked to the viewed node (i.e., `node_sources` carries a row attributing the node to this integration). A node reported only by AWS will not see Puppet's `catalog_view` tab even when the integration is healthy.
+- `global_page` slots are accessible whenever the integration is enabled and the user has the permission. They render an unavailable state when the integration is disabled or unhealthy (`PLUG-904`).
+
+All seven capabilities flow through `Vigil.Plugin.Dispatcher.supplementary_call/4` (design/03 §3.10.4) — same caching, circuit breaker, concurrency limiter, and deadline propagation as generic capability calls. The `environment_manager` page's deploy action is the one writeable surface among the seven; it goes through `deploy_environment/3` / `deploy_all_environments/2` (§11.3.5) and inherits their audit and journal behaviour.
 
 ## 11.4 Caching
 
@@ -549,4 +635,4 @@ Bolt, Ansible, SSH, Proxmox, AWS, and Azure plugins all follow this shape. Their
 
 ---
 
-[← Previous: MCP & AI](10-mcp-and-ai.md) | [Next: Deployment & Ops →](12-deployment-and-ops.md)
+[← Previous: MCP & AI](10-mcp-and-ai.md) | [Next: Ansible Integration →](14-ansible-integration.md)
