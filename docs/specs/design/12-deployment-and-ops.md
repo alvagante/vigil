@@ -19,7 +19,7 @@ Default distribution: Docker/OCI image. Dockerfile uses a multi-stage build:
 
 ```dockerfile
 # Build stage
-FROM hexpm/elixir:1.18.0-erlang-27.1-alpine AS build
+FROM hexpm/elixir:1.19.5-erlang-28.0-alpine AS build
 WORKDIR /app
 ENV MIX_ENV=prod
 COPY mix.exs mix.lock ./

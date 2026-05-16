@@ -28,3 +28,6 @@ Canonical labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-hu
 ### Domain docs
 
 Single-context repo. `CONTEXT.md` + `docs/adr/` at the root; PRD and design under `docs/specs/`. See [`docs/agents/domain.md`](docs/agents/domain.md).
+
+### KiroGraph
+@.kirograph/claude.md

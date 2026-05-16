@@ -64,6 +64,14 @@ Vigil.Application
 └── VigilWeb.Endpoint                        # Phoenix endpoint (last to start)
 ```
 
+> **Realization — Option B (distributed `application/0`).** The tree above is a *logical* view of which children supervise which. The implementation distributes the children across each umbrella child's own `application/0` callback, and BEAM's `application_controller` enforces startup order via the `:applications` dependency graph in each child's `mix.exs`:
+>
+> - `vigil_core.Application` supervises: `Vigil.Repo`, `Oban`, `Phoenix.PubSub (Vigil.PubSub)`, `Finch`, `Vigil.Telemetry.Supervisor`, `Vigil.Core.Supervisor`.
+> - `vigil_plugin.Application` supervises: `Vigil.Plugin.Registry`, `Vigil.Integrations.Supervisor`.
+> - `vigil_web.Application` supervises: `VigilWeb.Endpoint`.
+>
+> Order is enforced by declaring `vigil_core` as a runtime dep of `vigil_plugin` and `vigil_web`, and `vigil_plugin` as a runtime dep of `vigil_web`. There is no literal `Vigil.Application` module — the name in the diagram refers to the union of the three top supervisors. This keeps each app's `mix.exs` dependencies aligned with what that app actually uses (`vigil_web` owns `:phoenix`, `vigil_core` owns `:ecto_sql` / `:oban`) and lets EE apps slot in as additional siblings without mutating a centralized children list.
+
 ### 2.2.1 Startup order
 
 Order matters. `VigilWeb.Endpoint` starts *last* so the application can start taking user traffic only when the domain, plugins, and integrations are initialized. This is particularly important for the integration status dashboard and the "no integrations" empty state (`ERR-801`).
@@ -82,8 +90,8 @@ Order matters. `VigilWeb.Endpoint` starts *last* so the application can start ta
 
 | Supervisor | Strategy | Rationale |
 |------------|---------|-----------|
-| `Vigil.Application` (top) | `:one_for_one` | Unrelated failures don't cascade |
-| `Vigil.Core.Supervisor` | `:rest_for_one` | Downstream services depend on upstream (Cache before Journal) |
+| `vigil_core` / `vigil_plugin` / `vigil_web` top supervisors | `:one_for_one` | Default for `use Application`. Unrelated failures within an app don't cascade; cross-app failures are bounded by BEAM's `:application_controller`. |
+| `Vigil.Core.Supervisor` (inner, under `vigil_core` top) | `:rest_for_one` | Downstream services depend on upstream (Cache before Journal) |
 | `Vigil.Integrations.Supervisor` | `:one_for_one` | Per-integration isolation (`PLUG-401`) |
 | `Vigil.Integrations.<Plugin>.Supervisor.<id>` | `:one_for_one` | Per-sub-system isolation within a plugin (Puppet's PuppetDB/Puppetserver/Hiera) |
 | `Vigil.Core.Execution.Supervisor` | `:one_for_one` via DynamicSupervisor | Execution streams are independent |

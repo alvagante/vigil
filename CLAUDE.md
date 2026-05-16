@@ -1,2 +1,1 @@
-## KiroGraph
-@.kirograph/claude.md
+AGENTS.md
