@@ -295,9 +295,9 @@ The admin "unresolved links" view (`INV-109`) is a LiveView over this table. Res
 
 ## 5.3 Cache architecture
 
-`CACHE-006` (revised) prescribes a **shared, unfiltered integration cache**. The cache holds the full integration response keyed by integration + capability; RBAC target-scope filtering is applied at *presentation time*, after the cache lookup and before the response leaves the application layer. Cache entries are shared across all users who have access to the integration; per-principal cache entries are not used.
+`CACHE-006` (revised) and [ADR-0006](../../adr/0006-shared-unfiltered-integration-cache.md) prescribe a **shared, unfiltered integration cache**. The cache holds the full integration response keyed by integration + capability; RBAC target-scope filtering is applied at *presentation time*, after the cache lookup and before the response leaves the application layer. Cache entries are shared across all users who have access to the integration; per-principal cache entries are not used.
 
-This inverts the earlier per-principal-scoped design. The justification: at the 10,000-node target, filtering a single full inventory against a user's permission scope in memory takes microseconds, while maintaining one cache entry per principal multiplies memory use and cache misses by the number of distinct permission scopes in the deployment.
+This inverts the earlier per-principal-scoped design. The justification: at the 10,000-node target, filtering a single full inventory against a compiled effective scope is cheaper than maintaining one cache entry per principal, which multiplies memory use and cache misses by the number of distinct permission scopes in the deployment.
 
 ### 5.3.1 ETS layout
 
@@ -306,7 +306,7 @@ One ETS table per `{integration_id, capability}`:
 ```elixir
 :ets.new(table_name(int_id, :inventory), [
   :set,
-  :public,
+  :protected,
   :named_table,
   read_concurrency: true,
   write_concurrency: true
@@ -354,7 +354,11 @@ defmodule Vigil.Core.Inventory do
 end
 ```
 
-`Vigil.Core.RBAC.filter_targets/3` resolves the principal's effective target selectors once (cached in the per-process `Scope` for the request's lifetime) and runs the in-memory predicate over the result set. For 10,000 candidate nodes against a typical scope filter (a group membership predicate or a tag match), this is a sub-millisecond operation. See [§8.3](08-auth-rbac.md) for the target-scope evaluation algorithm — `RBAC-108` requires the per-target evaluation to be a constant number of data-store queries, which the presentation-time filter satisfies by issuing one bounded query to resolve the principal's scope and zero queries during the in-memory filter.
+`Vigil.Core.RBAC.filter_targets/3` resolves the principal's effective target selectors once (cached in the per-process `Scope` for the request's lifetime) and runs the in-memory predicate over the result set. The filter path operates on normalized attributes already present on cached records: integration id, node id, group id, environment, site, tenant, tags, and source-specific target identifiers.
+
+The important performance invariant is that cache-hit filtering is `records x cheap predicate`, not `records x RBAC rules`. Raw role/rule interpretation happens when building the effective scope, not once per cached object. See [§8.3](08-auth-rbac.md) for the target-scope evaluation algorithm — `RBAC-108` requires the per-target evaluation to be a constant number of data-store queries, which the presentation-time filter satisfies by issuing bounded queries to resolve the principal's scope and zero queries during the in-memory filter.
+
+If a deployment adds enough granular RBAC that a linear scan over cached records becomes measurable, the next step is not per-principal cache keys. The cache remains shared and unfiltered, while the application layer adds derived indexes such as `%{environment_id => records}`, `%{site_id => records}`, `%{node_group_id => records}`, or scoped materialized subsets invalidated with the parent cache entry.
 
 > **Decision: Cache stores integration truth; the application layer enforces visibility.**
 > Two consequences worth surfacing:
@@ -618,7 +622,7 @@ Dashboards built from these events answer: which source is the slowest? Which in
 |--------|-----------|
 | 10,000-node inventory in 2 seconds first-page render (`PERF-002`) | ETS cache hit + cursor pagination; aggregation runs in under 500ms cached |
 | No slower-than-slowest-source latency (`EXS-002`, `NFR-007`) | Fast-sources-first progressive rendering |
-| 5 concurrent users no read queueing (`PERF-007`) | Ecto pool sized for concurrency + LiveView per-process isolation |
+| 10 concurrent users no read queueing (`PERF-007`) | Ecto pool sized for concurrency + LiveView per-process isolation |
 | 100 concurrent streaming executions (`PERF-008`, `STR-101`) | Dynamic supervisor, per-execution process, no shared state |
 | Request deduplication (`PERF-004`, `PUP-1004`) | Request coalescer in the dispatcher |
 | Incremental updates (`PERF-009`, `STR-502`) | Plugin supports change-feed queries; dispatcher passes checkpoint |
@@ -727,7 +731,7 @@ Phoenix LiveView holds a long-lived WebSocket. In a multi-node deployment, the l
 
 The REST API and MCP endpoint are stateless HTTP. A client's repeated requests may route to any node. With N nodes and per-node ETS caches, the effective cache hit rate for a given principal degrades roughly as `1/N` compared to a single-node deployment — the principal's first request warms node A's cache; the second request lands on node B and misses; and so on.
 
-For the 5-user target scale on a single node (the default deployment), this is moot. For multi-node deployments (an EE feature via FS EE-2), two options:
+For the 10-user target scale on a single node (the default deployment), this is moot. For multi-node deployments (an EE feature via FS EE-2), two options:
 
 1. **Load-balancer affinity on principal identity.** Configure the load balancer to hash on the `Authorization: Bearer <token>` header so each API principal's requests route to the same node. This is straightforward in most load balancers (HAProxy `balance hdr(Authorization)`, nginx `ip_hash`-equivalent on a custom variable, AWS ALB target-group stickiness).
    - Pro: preserves single-node cache hit rates for the most common case (an AI agent issuing many queries against the MCP endpoint).

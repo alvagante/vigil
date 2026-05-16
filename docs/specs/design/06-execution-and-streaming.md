@@ -4,12 +4,12 @@ This section covers PRD `EXEC-*`, `STR-*`, and the Remote Execution capability c
 
 ## 6.1 Process model
 
-Each execution is owned by one GenServer:
+Per [ADR-0007](../../adr/0007-execution-stream-replay-model.md), each execution group is owned by one GenServer:
 
 ```
 Vigil.Core.Execution.Supervisor  (DynamicSupervisor)
 │
-└── Vigil.Core.Execution.Stream  (one per execution_id)
+└── Vigil.Core.Execution.Stream  (one per execution_group_id)
       │
       ├── spawns plugin-specific runner (CLI port, API poller)
       ├── buffers output
@@ -18,7 +18,7 @@ Vigil.Core.Execution.Supervisor  (DynamicSupervisor)
       └── decommissions after grace period
 ```
 
-The GenServer is the single source of truth during an execution. LiveView processes subscribe. The MCP server can also subscribe (for future "watch execution" tools). Audit writes happen at start and end.
+The GenServer is the single source of truth during an execution group. It owns one runner and one live output spool per dispatched target. LiveView processes subscribe to the per-target streams they need. The MCP server can also subscribe (for future "watch execution" tools). Audit writes happen at start and end.
 
 ## 6.2 Execution lifecycle
 
@@ -152,8 +152,10 @@ defmodule Vigil.Core.Execution.Stream do
     :plugin_module,
     :targets,              # %{execution_id => %{node_id, identity, outcome}}
     :runner_ref,           # reference to the plugin runner (port, task)
-    buffer: %{},           # %{execution_id => ring buffer of recent chunks}
+    spool: %{},            # %{execution_id => complete ordered chunks while live}
+    recent_buffer: %{},    # %{execution_id => ring buffer of recent chunks}
     buffer_position: %{},  # %{execution_id => monotonic position}
+    subscriber_ack: %{},   # %{subscriber_pid => %{execution_id => last_position}}
     bytes_written: %{},    # %{execution_id => uncompressed bytes; for DM-604 cap}
     finished_targets: %{},
     grace_timer: nil
@@ -166,6 +168,10 @@ defmodule Vigil.Core.Execution.Stream do
     GenServer.call(via(execution_group_id), {:backfill, execution_id, since_position})
   end
 
+  def ack(execution_group_id, execution_id, subscriber_pid, position) do
+    GenServer.cast(via(execution_group_id), {:ack, execution_id, subscriber_pid, position})
+  end
+
   def abort(execution_group_id, principal) do
     GenServer.call(via(execution_group_id), {:abort, principal})
   end
@@ -174,15 +180,41 @@ end
 
 State lives entirely in the GenServer. LiveView disconnects don't affect it (`STR-203`). The per-target keying by `execution_id` (the per-node row's primary key) means subscribers can address a single target's stream without parsing positional indexes.
 
-### 6.2.5 Buffering
+### 6.2.5 Buffering, replay, and acknowledgements
 
-Per-target ring buffers hold the most recent N kilobytes (default 128KB per target). Each chunk gets a monotonic position number:
+`STR-103` requires a user joining a live stream after it began to receive all output already produced before joining the live tail. A short ring buffer alone is insufficient, so each Stream GenServer maintains two per-target structures while the execution is live:
+
+| Structure | Purpose | Lifetime |
+|-----------|---------|----------|
+| `spool` | Complete ordered chunk list from position `1` onward, capped by the transcript size cap (`DM-604`) plus explicit truncation marker | Live execution + grace window |
+| `recent_buffer` | Small ring buffer (default 128 KB) for cheap reconnects from recent positions | Live execution + grace window |
+
+Each chunk gets a monotonic position number:
 
 ```elixir
 %{1 => {pos_1, "chunk text"}, 2 => {pos_2, "chunk text"}, ...}
 ```
 
-When a LiveView reconnects, it calls `get_buffer/2` with its last-received position and receives all chunks since (`STR-201`, `STR-202`). For chunks evicted from the ring buffer (long disconnections), the LiveView falls back to the persisted transcript on completion.
+Replay behaviour:
+
+- **Join from start (`STR-103`)**: a new LiveView calls `get_buffer(group_id, execution_id, 0)` and receives the full live spool before subscribing to the live tail.
+- **Reconnect (`STR-201`)**: a reconnecting LiveView calls `get_buffer/3` with its last acknowledged position. If the requested position is still in `recent_buffer`, replay is cheap. If not, replay falls back to the full spool and slices from the requested position.
+- **Long absence after close (`STR-204`)**: once the Stream GenServer has terminated, replay comes from the persisted transcript in PostgreSQL.
+
+The spool is bounded by the same uncompressed transcript cap as persistence. When the cap is reached, the GenServer appends the truncation marker required by `DM-604`, keeps broadcasting live output to current subscribers, and stops appending additional chunks to the spool or persisted transcript buffer. This satisfies replay guarantees up to the documented transcript cap and makes truncation explicit rather than silent.
+
+`STR-202` is implemented with explicit client acknowledgements. Every rendered chunk carries `data-position`; a lightweight LiveView hook batches acknowledgements and sends the highest contiguous rendered position for each target:
+
+```elixir
+def handle_event("ack_execution_output",
+                 %{"execution_id" => execution_id, "position" => position},
+                 socket) do
+  Stream.ack(socket.assigns.execution_group_id, execution_id, self(), position)
+  {:noreply, socket}
+end
+```
+
+The Stream GenServer stores the latest ack per subscriber. On disconnect, the LiveView also stores the last acknowledged position in signed session metadata / URL state for the execution view, so a new LiveView process can resume from the same position after reconnect.
 
 ### 6.2.6 PubSub broadcast
 
@@ -203,7 +235,7 @@ Multiple LiveViews (same user, multiple tabs; different users viewing the same e
 When the runner exits, the Stream GenServer finalizes each per-target row independently:
 
 1. For each target, derive per-target `outcome`, `exit_status`, `duration_ms`.
-2. Gzip the in-memory buffer (truncated to 50 MB uncompressed per `DM-604` if it exceeded the cap — see [§4.5.3](04-data-model.md#453-transcript-size-cap-and-truncation-dm-604)).
+2. Gzip the complete live spool (truncated to 50 MB uncompressed per `DM-604` if it exceeded the cap — see [§4.5.3](04-data-model.md#453-transcript-size-cap-and-truncation-dm-604)).
 3. In **one DB transaction per group**:
    - `UPDATE executions SET outcome=$1, exit_status=$2, ended_at=$3, duration_ms=$4, streaming_state='closed', transcript=$5, transcript_meta=$6, partial_transcript=NULL WHERE id=$7` — repeated per target via `Ecto.Multi` so all per-target rows reach their terminal state atomically.
    - One `INSERT INTO journal_entries` per target (`DM-606`, `EXEC-201`).
@@ -216,7 +248,7 @@ def handle_info({:runner_done, final_state}, state) do
 
   Repo.transaction(fn ->
     Enum.each(state.targets, fn {execution_id, target} ->
-      Vigil.Core.Executions.finalize_row(execution_id, target, state.buffer[execution_id])
+      Vigil.Core.Executions.finalize_row(execution_id, target, state.spool[execution_id])
       Vigil.Core.Journal.write_for_execution(execution_id, target)
     end)
   end)
@@ -281,7 +313,7 @@ def handle_info(:checkpoint, state) do
 end
 ```
 
-The partial transcript column is cumulative: each checkpoint appends to it. On completion, the final transcript overwrites the partial one.
+The partial transcript column is cumulative: each checkpoint writes the full checkpointed spool snapshot. On completion, the final transcript overwrites the partial one.
 
 **Reconnection after restart.** When the platform comes back up:
 
@@ -361,19 +393,23 @@ Release is guaranteed via `try/after` in the Stream GenServer's `terminate/2`.
 
 ## 6.5 Streaming to LiveView
 
-The `ExecutionLive` LiveView subscribes on mount:
+The `ExecutionLive` LiveView subscribes on mount. The `:id` route parameter may be either an `execution_group_id` for the group view or an `execution_id` for a single-target detail view; the loader resolves it to `{group, visible_executions}` before subscribing.
 
 ```elixir
-def mount(%{"id" => execution_id}, _session, socket) do
+def mount(%{"id" => id}, _session, socket) do
+  {group, executions} = load_execution_view(id)
+
   if connected?(socket) do
-    Phoenix.PubSub.subscribe(Vigil.PubSub, "execution_stream:#{execution_id}")
+    for execution <- executions do
+      Phoenix.PubSub.subscribe(Vigil.PubSub, "execution_stream:#{execution.id}")
+    end
   end
 
   {:ok, socket
-    |> assign(:execution_id, execution_id)
-    |> assign(:execution, load_execution(execution_id))
+    |> assign(:execution_group_id, group.id)
+    |> assign(:executions, executions)
     |> stream(:chunks, [], dom_id: &dom_id_for_chunk/1)
-    |> backfill_buffer()}
+    |> replay_from_last_ack()}
 end
 
 def handle_info({:chunk, target_id, stream_kind, position, text}, socket) do
@@ -383,7 +419,7 @@ end
 
 def handle_info({:ended, status}, socket) do
   {:noreply, socket
-    |> assign(:execution, reload(socket.assigns.execution_id))
+    |> assign(:executions, reload_visible(socket.assigns.execution_group_id))
     |> put_flash(:info, "Execution #{status}")}
 end
 ```
@@ -392,11 +428,9 @@ end
 
 ### 6.5.1 Disconnect/reconnect
 
-LiveView provides automatic WebSocket reconnection. On reconnect, `mount/3` runs again; the `connected?(socket)` branch re-subscribes and re-backfills from the Stream GenServer's buffer using the last-rendered position. No lost output (`STR-201`).
+LiveView provides automatic WebSocket reconnection. On reconnect, `mount/3` runs again; the `connected?(socket)` branch re-subscribes and replays from the Stream GenServer using the last acknowledged position. No lost output (`STR-201`, `STR-202`).
 
-For very long disconnections where the ring buffer has rolled past the last-rendered position, the LiveView detects the gap and either:
-- Fetches the complete transcript from the DB (if execution ended), or
-- Shows a "gap indicator" with a "reload full output" affordance.
+For very long disconnections, the LiveView replays from the live spool while the execution is still active or from the persisted transcript after completion. If the transcript cap was reached, the replay includes the explicit truncation marker from `DM-604`.
 
 ### 6.5.2 Multi-user viewing
 

@@ -172,7 +172,7 @@ bin/vigil eval "Vigil.Release.migrate"
 
 ### 12.3.2 Connection pool
 
-`Ecto.Repo` uses `DBConnection` pooling. Size defaults to `2 * concurrent_users + background_jobs`. At the target (5 users, moderate background), a 10-connection pool is comfortable. The pool is configurable per `DB_POOL_SIZE`.
+`Ecto.Repo` uses `DBConnection` pooling. Size defaults to `2 * concurrent_users + background_jobs`. At the target (10 users, moderate background), a 20-connection pool is comfortable. The pool is configurable per `DB_POOL_SIZE`.
 
 ### 12.3.3 Required extensions
 

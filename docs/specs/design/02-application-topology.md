@@ -18,8 +18,6 @@ vigil/                                # umbrella root (CE, AGPL v3)
 │   ├── vigil_integrations_ansible/
 │   ├── vigil_integrations_ssh/
 │   ├── vigil_integrations_proxmox/
-│   ├── vigil_integrations_aws/
-│   └── vigil_integrations_azure/
 ├── config/                           # shared config
 │   ├── config.exs
 │   ├── dev.exs
@@ -32,6 +30,8 @@ vigil/                                # umbrella root (CE, AGPL v3)
 ```
 
 Each umbrella child has its own `mix.exs`, its own `application/0`, and its own dependencies. The root `mix.exs` declares no runtime dependencies beyond the umbrella children.
+
+AWS and Azure integration apps are Phase 2a work. They follow the same child-app pattern when introduced, but they are not present in the Phase 1 CE umbrella.
 
 Enterprise Edition apps (`vigil_auth_saml`, `vigil_auth_ldap`, `vigil_auth_enterprise`, `vigil_enterprise_*`) live in a separate private umbrella and are **not** present in this repository. They register into CE's extension points (`Vigil.Auth.Provider`, `Vigil.Audit.Exporter`, `Vigil.Cluster.Backend`, etc.) at runtime when the `vigil_enterprise` OTP app is loaded alongside CE. See [`docs/specs/editions.md`](../editions.md) §4 for the full EE app inventory and license-validation approach.
 
@@ -145,22 +145,22 @@ Long-running operations (executions, provisioning, streams) have their own proce
 ```
 Vigil.Core.Execution.Supervisor  (DynamicSupervisor)
 │
-├── Vigil.Core.Execution.Stream.<execution_id>
+├── Vigil.Core.Execution.Stream.<execution_group_id>
 │   # GenServer owning the subprocess / HTTP long-poll
 │   # buffers output, broadcasts chunks, persists transcript on end
 │
-├── Vigil.Core.Execution.Stream.<execution_id>
+├── Vigil.Core.Execution.Stream.<execution_group_id>
 ...
 ```
 
 A LiveView user opens the execution page. The LiveView's `mount/3`:
 
-1. Looks up or starts `Vigil.Core.Execution.Stream.<execution_id>` (via a registered name).
-2. `Phoenix.PubSub.subscribe(Vigil.PubSub, "execution_stream:<id>")`.
-3. Requests the current buffer contents to backfill already-produced output (`STR-103`).
+1. Looks up `Vigil.Core.Execution.Stream.<execution_group_id>` (via a registered name).
+2. Subscribes to one or more per-target `execution_stream:<execution_id>` topics.
+3. Requests replay from position `0` or from the last acknowledged position (`STR-103`, `STR-202`).
 4. Receives `{:execution_chunk, chunk}` messages thereafter.
 
-If the LiveView disconnects, the `Stream` GenServer continues unaffected (`STR-203`). A re-connecting LiveView re-subscribes and backfills from the buffer. On execution completion, the GenServer writes the full transcript to Postgres and terminates gracefully after a grace period (allowing late reconnections to still get `{:execution_ended, exit_status}`).
+If the LiveView disconnects, the `Stream` GenServer continues unaffected (`STR-203`). A re-connecting LiveView re-subscribes and backfills from the live spool. On execution completion, the GenServer writes the full transcript to Postgres and terminates gracefully after a grace period (allowing late reconnections to still get `{:execution_ended, exit_status}`).
 
 ## 2.6 Phoenix.PubSub topics
 

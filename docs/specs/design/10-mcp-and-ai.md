@@ -125,7 +125,7 @@ Tools run under the token's principal. The same `Vigil.Core.RBAC.Evaluator` used
 - Cannot execute commands, provision, or configure anything.
 - Cannot access other users' private data.
 
-The cache used by the dispatcher is keyed by principal scope (`MCP-203`), so a cache entry computed for an admin isn't returned to an MCP service account with narrower scope.
+MCP tools use the same shared, unfiltered integration cache as the web UI (`MCP-203`, `CACHE-006`). A tool constructs its response only after applying the token principal's compiled RBAC target-scope filter, so an admin and a narrower MCP service account may hit the same cache entry but never receive the same filtered payload unless their scopes match. MCP filtering follows the same `RBAC-110` constraint as the web UI: resolve effective scope once, then filter cached records through bounded membership or indexed predicate checks.
 
 ### 10.1.7 Rate limiting
 
@@ -147,7 +147,7 @@ Defaults: 120 requests per minute per principal; configurable per token on issua
 > **Decision: Rate limits are enforced per-node in multi-node deployments.**
 > `Hammer`'s default backend is ETS — in-process, per-node. In a 3-node cluster, a principal can make up to `3 × 120 = 360` requests per minute before any single node rate-limits them. Per `MCP-202`, the platform documents this enforcement scope rather than paying the cost of a cluster-wide coordinated limiter.
 >
-> Cluster-wide enforcement would require either a distributed counter (Redis — explicitly excluded from the stack) or a Postgres-backed Hammer (adds a per-request DB write on the hot auth path, degrading latency for all MCP calls). For the target deployment scale (5 users, 3-node max for HA), the per-node effective limit is the correct tradeoff.
+> Cluster-wide enforcement would require either a distributed counter (Redis — explicitly excluded from the stack) or a Postgres-backed Hammer (adds a per-request DB write on the hot auth path, degrading latency for all MCP calls). For the target deployment scale (10 users, 3-node max for HA), the per-node effective limit is the correct tradeoff.
 >
 > Two mitigations take the edge off the per-node characteristic: (1) operators sizing cluster-aware limits should set per-node limits to `expected_global / node_count` rather than `expected_global`, and (2) the same load-balancer affinity on principal ID that improves cache hit rates (see design/05 §5.11.2) also reduces the rate-limit dilution — stuck-to-one-node principals get the expected global limit.
 >

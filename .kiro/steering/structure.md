@@ -15,7 +15,7 @@ The repository is currently a **spec-first project**: `docs/specs/` holds the au
 │       │   ├── 01-executive-summary.md ... 21-future-considerations.md
 │       └── design/                # Architectural design (Elixir/Phoenix, opinionated)
 │           ├── 00-index.md
-│           └── 01-overview.md ... 13-testing-strategy.md
+│           └── 01-overview.md ... 15-proxmox-integration.md
 ```
 
 ## Planned code layout (Elixir umbrella)
@@ -38,9 +38,7 @@ vigil/                             # umbrella root (CE, AGPL v3 — public repo)
 │   ├── vigil_integrations_bolt/
 │   ├── vigil_integrations_ansible/
 │   ├── vigil_integrations_ssh/
-│   ├── vigil_integrations_proxmox/
-│   ├── vigil_integrations_aws/
-│   └── vigil_integrations_azure/
+│   └── vigil_integrations_proxmox/
 ├── config/
 │   ├── config.exs
 │   ├── dev.exs
@@ -93,6 +91,7 @@ vigil_web  →  vigil_core  ←  vigil_integrations_*
 - `vigil_auth_oidc` (CE) depends on `vigil_core` — it implements the `Vigil.Auth.Provider` behaviour defined there.
 - `vigil_web` depends on `vigil_core` and `vigil_plugin`; it does **not** depend on specific integrations or auth providers — it discovers them via the respective registries.
 - Each integration is a separate OTP app so heavy deps (AWS SDK, Azure SDK) are isolated and plugins can be enabled/disabled as child applications.
+- AWS and Azure integration apps (`vigil_integrations_aws`, `vigil_integrations_azure`) are Phase 2a; they follow the same pattern but are not present in Phase 1.
 - EE apps (out-of-tree) depend on CE apps but never the reverse.
 
 ## Naming conventions
@@ -100,7 +99,7 @@ vigil_web  →  vigil_core  ←  vigil_integrations_*
 - **Modules:** `Vigil.<Context>.<Component>` (e.g., `Vigil.Core.Inventory.Linker`, `Vigil.Integrations.Puppet.PuppetDB.Client`).
 - **Phoenix:** `VigilWeb.<Live|Controller>.<Name>` (e.g., `VigilWeb.InventoryLive`).
 - **Requirement traceability:** Tests and commits reference PRD IDs (`INV-001`, `PUP-014`, etc.) from `docs/specs/prd/` so behaviour can be grep'd across PRD → design → code → tests.
-- **PubSub topics:** colon-delimited, scoped by entity ID — `integration_health:<id>`, `node:<node_id>`, `execution_stream:<id>`, `journal:global`.
+- **PubSub topics:** colon-delimited, scoped by entity ID — `integration_health:<id>`, `node:<node_id>`, `execution_stream:<execution_id>` (per-target), `journal:global`.
 - **Telemetry events:** `[:vigil, :<area>, :<event>]` — e.g., `[:vigil, :plugin, :call, :stop]`, `[:vigil, :cache, :hit]`.
 
 ## Test organization

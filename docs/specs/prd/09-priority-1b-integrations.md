@@ -155,7 +155,7 @@ The Proxmox API issues short-lived VNC proxy tickets that allow direct browser c
 
 ## 9.3 AWS
 
-AWS provisioning targets EC2 specifically. Other AWS services (RDS, S3, etc.) are out of scope for Phase 1b — they may appear in later priorities only when there is a node-level case for them.
+AWS provisioning targets EC2 specifically. Other AWS services (RDS, S3, etc.) are out of scope for Phase 2a — they may appear in later priorities only when there is a node-level case for them.
 
 ### 9.3.1 Inventory
 
@@ -228,7 +228,7 @@ AWS provisioning targets EC2 specifically. Other AWS services (RDS, S3, etc.) ar
 
 ## 9.4 Azure
 
-Azure provisioning targets Virtual Machines specifically. Container Apps, AKS, App Services, and other higher-level services are out of scope for Phase 1b.
+Azure provisioning targets Virtual Machines specifically. Container Apps, AKS, App Services, and other higher-level services are out of scope for Phase 2a.
 
 ### 9.4.1 Inventory
 
@@ -298,9 +298,9 @@ Azure provisioning targets Virtual Machines specifically. Container Apps, AKS, A
 | `AZ-602` | Per-subscription and per-resource-group scoping **MUST** be enforceable. |
 | `AZ-603` | Per-tag scoping **SHOULD** be enforceable. |
 
-## 9.5 Acceptance criteria for Phase 1b
+## 9.5 Acceptance criteria
 
-The Phase 1b integrations are considered complete when:
+Each provisioning integration is considered complete in its delivery phase when:
 
 1. Each plugin populates unified inventory with VMs/instances and groups derived from native attributes.
 2. Each plugin gathers facts from the upstream API with the documented field set.

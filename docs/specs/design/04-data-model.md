@@ -346,9 +346,9 @@ The "group is finished" boolean is `still_running = 0`. A LiveView watching a gr
 
 `EXEC-101` requires live streaming to the UI; `DM-604` requires the final transcript to be persisted. The two are decoupled:
 
-- **During the run** the Stream GenServer holds the per-target buffer in memory (ring buffer, default 128 KB) and broadcasts each chunk on `execution_stream:<execution_id>`. The `executions.transcript` column is `NULL`.
-- **Checkpoints** (every 30 s after the 60 s warm-up window) write the *cumulative* buffer to `partial_transcript` as a single gzipped blob. This is an `UPDATE` with `partial_transcript = $1` — no `bytea_append`, no row growth pathology.
-- **Completion** writes the full buffer to `transcript` in one final `UPDATE` and clears `partial_transcript`. The Stream GenServer also updates `outcome`, `exit_status`, `ended_at`, `duration_ms`, and `streaming_state = 'closed'` in the same statement so the row reaches its terminal state atomically.
+- **During the run** the Stream GenServer holds a complete per-target live spool for replay-from-start (`STR-103`) plus a small recent ring buffer for cheap reconnects. Each chunk is broadcast on `execution_stream:<execution_id>`. The `executions.transcript` column is `NULL`.
+- **Checkpoints** (every 30 s after the 60 s warm-up window) write the *cumulative* spool snapshot to `partial_transcript` as a single gzipped blob. This is an `UPDATE` with `partial_transcript = $1` — no `bytea_append`, no row growth pathology.
+- **Completion** writes the full spool to `transcript` in one final `UPDATE` and clears `partial_transcript`. The Stream GenServer also updates `outcome`, `exit_status`, `ended_at`, `duration_ms`, and `streaming_state = 'closed'` in the same statement so the row reaches its terminal state atomically.
 
 The Postgres `bytea` field is *not* used as an incremental append target. PostgreSQL TOAST handles large columns fine, but `UPDATE` on a bytea column writes the entire new value — checkpointing into the column is acceptable because checkpoints are every 30 s, not per-chunk. Per-chunk persistence would generate one row update per output line, which is the wrong write pattern.
 

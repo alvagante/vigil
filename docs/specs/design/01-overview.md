@@ -61,8 +61,8 @@ Vigil is a single Elixir umbrella application rendering HTML over WebSockets via
 > **Decision: PostgreSQL is the only persistent store.**
 > Journal, executions, configuration, audit, users, roles, linking overrides, retention — all PostgreSQL. No Redis for caching, no Elasticsearch for search, no time-series DB for history. We get strong consistency for RBAC and audit, JSONB for the heterogeneous payloads journal and reports carry, full-text search for journal content, and SKIP LOCKED for job queues. Scale at 10,000 nodes is well inside what a single PostgreSQL instance handles.
 
-> **Decision: Caching in ETS, keyed by integration + capability + principal scope.**
-> `CACHE-006` requires cache keys scoped to the requesting principal's permission scope. An external cache with per-principal namespacing is buildable but adds an operational dependency for a problem ETS solves in-node with no network hop. Cache sizes are bounded per integration, eviction is LRU, and invalidation is a `:ets.select_delete/2`.
+> **Decision: Caching in ETS, keyed by integration + capability + call arguments.**
+> `CACHE-006` requires shared, unfiltered integration responses. RBAC target-scope filtering happens after cache lookup and before presentation or API/MCP response construction. This avoids per-principal cache fragmentation while keeping authorization enforcement at the application boundary. Cache sizes are bounded per integration, eviction is LRU, and invalidation is a `:ets.select_delete/2`.
 
 > **Decision: Oban for background jobs.**
 > Health checks, scheduled inventory refresh, AI calls, retention purges — all are background work. Oban gives us persisted jobs in PostgreSQL, cron scheduling, retries with backoff, per-queue concurrency limits, and a dashboard. No external broker. PRD `FUT-101` (scheduled executions) plugs into the same layer.
@@ -111,14 +111,14 @@ The stack is deliberately boring. Every library named here is widely used in pro
 
 - **No GraphQL.** The UI is LiveView, not a SPA. The API is REST-ish for the CLI and MCP server. A GraphQL layer would duplicate Ecto's composition.
 - **No Redis.** ETS for caching; Oban for queues; PubSub for eventing. Each replaces a common Redis use case with an in-node primitive.
-- **No Elasticsearch.** PostgreSQL full-text search covers journal content search. `tsvector` with a GIN index is within target at 10,000 nodes × reasonable journal entry volume.
+- **No Elasticsearch.** Journal search is limited to entries currently loaded in the browser; deep historical search stays in source-native tools per PRD `JRN-103`.
 - **No separate TSDB.** Per PRD `SCOPE-111`, Vigil does not store metrics. Monitoring data is read through at query time and cached short-term in ETS.
 - **No service mesh.** Single-node deployment is the default. Multi-node deployment uses BEAM distribution (libcluster) only for sharing PubSub across nodes when horizontal scaling is needed.
 - **No frontend build system beyond esbuild.** Tailwind runs via the Phoenix-integrated plugin. No Webpack, no Vite, no React.
 
 ## 1.5 Application boundaries
 
-The umbrella application is split into these child applications, described fully in [section 2](02-application-topology.md):
+The Phase 1 CE umbrella application is split into these child applications, described fully in [section 2](02-application-topology.md):
 
 | Application | Purpose |
 |-------------|---------|
@@ -131,11 +131,9 @@ The umbrella application is split into these child applications, described fully
 | `vigil_integrations_ansible` | Ansible plugin (Phase 1 CE). |
 | `vigil_integrations_ssh` | SSH plugin (Phase 1 CE). |
 | `vigil_integrations_proxmox` | Proxmox plugin (Phase 1 CE). |
-| `vigil_integrations_aws` | AWS plugin — **Phase 2a (deferred)**. Umbrella app does not exist in Phase 1; the integration ships in the same umbrella once Phase 2a begins. |
-| `vigil_integrations_azure` | Azure plugin — **Phase 2a (deferred)**. As above. |
 | `vigil` (root) | Orchestrating application that starts all the children in the right order. |
 
-Phase 1 CE ships the five integration apps marked above. AWS and Azure are deferred to **Phase 2a** per PRD §20 — they remain spec'd in PRD section 9 as the authoritative reference for when those apps are built. Enterprise Edition features (SAML, LDAP, multi-IdP OIDC, HA, approvals, SIEM export, scheduled executions, webhooks, custom dashboards, multi-tenancy) live in a separate `vigil_enterprise` umbrella outside this repository and are delivered in **Phase 2b**, not concurrently with Phase 1. They register into CE's extension points at runtime. CE works fully without EE loaded.
+AWS and Azure are deferred to **Phase 2a** per PRD §20. When built, they join the same umbrella pattern as `vigil_integrations_aws` and `vigil_integrations_azure`; those apps do not exist in Phase 1. The AWS/Azure specs remain in PRD section 9 as the authoritative reference for that work. Enterprise Edition features (SAML, LDAP, multi-IdP OIDC, HA, approvals, SIEM export, scheduled executions, webhooks, custom dashboards, multi-tenancy) live in a separate `vigil_enterprise` umbrella outside this repository and are delivered in **Phase 2b**, not concurrently with Phase 1. They register into CE's extension points at runtime. CE works fully without EE loaded.
 
 Each integration is its own OTP application because:
 

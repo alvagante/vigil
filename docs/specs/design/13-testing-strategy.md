@@ -273,6 +273,10 @@ end
 
 `count_queries/1` is a test helper that subscribes to the `[:vigil, :repo, :query]` telemetry event and counts emissions during the closure. It fails the test if any per-target query is issued. This closes the gap noted in the architectural critique: functional RBAC tests pass under a linearly-scaling implementation, but this structural assertion does not.
 
+**Shared-cache filtering performance (`TEST-205`, `CACHE-006`, `RBAC-110`):**
+
+The shared cache path gets its own regression test: warm a full 10,000-node cache as an administrator, then read through narrower principals with granular scopes. The assertion is both correctness and shape: bounded query count, no raw-rule evaluation per cached record, and first page within the cache-hit latency budget.
+
 **Journal event normalization (`TEST-203`):**
 
 ```elixir
@@ -420,6 +424,23 @@ test "identity linker processes 10k observations within 5 seconds" do
   {elapsed, _result} = :timer.tc(fn -> Linker.link(observations, rules: default_rules()) end)
 
   assert elapsed < 5_000_000, "Linker took #{div(elapsed, 1000)}ms"
+end
+
+@tag :perf
+test "10 concurrent users read without queueing" do
+  users = for _ <- 1..10, do: insert(:user, roles: [:operator])
+
+  tasks =
+    for user <- users do
+      Task.async(fn ->
+        start = System.monotonic_time(:millisecond)
+        {:ok, _view, _html} = live(log_in(conn, user), ~p"/inventory")
+        System.monotonic_time(:millisecond) - start
+      end)
+    end
+
+  elapsed = Task.await_many(tasks, 5_000)
+  assert Enum.max(elapsed) < 2_000
 end
 
 @tag :perf

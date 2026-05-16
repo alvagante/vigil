@@ -36,6 +36,7 @@ The user flows in [section 13](13-user-flows.md) define the end-to-end test surf
 | `TEST-202a` | **RBAC query efficiency** — authorization checks against N targets **MUST** be asserted to issue a constant (bounded) number of data-store queries regardless of N. Tests **MUST** explicitly count queries at N = 1, 10, 100, and 1000 targets and fail on any per-target query pattern. This closes the gap that a functionally correct but linearly-scaling implementation would otherwise pass (`RBAC-108`). |
 | `TEST-203` | **Journal event extraction** — given synthetic Puppet reports, AWS CloudTrail events, and monitoring transitions, event extraction **MUST** produce the correct journal entries and grouping. Properties to test: no-op runs produce no entries; events from one report share a group key; steady-state monitoring produces no entries. |
 | `TEST-204` | **Cache coalescing** — given concurrent requests for the same cache key, the system **MUST** issue one upstream call. Property tests **MUST** verify under varying concurrency and timing. |
+| `TEST-205` | **Shared-cache RBAC filter cost** — tests **MUST** cover cache-hit reads where a broad user warms the shared cache and narrower users with granular scopes read the same entry. The implementation **MUST** prove bounded query count and acceptable latency at the 10,000-node / 10-concurrent-user target. |
 
 ### 16.1.4 Resilience tests
 
@@ -80,7 +81,7 @@ These are explicitly low-value categories. The system **SHOULD NOT** invest test
 
 | ID | Requirement |
 |----|-------------|
-| `TEST-701` | The system **MUST** have performance tests verifying the scale targets: 10,000-node inventory rendered within 2 seconds; 100 concurrent streaming executions; 5 concurrent users. |
+| `TEST-701` | The system **MUST** have performance tests verifying the scale targets: 10,000-node inventory rendered within 2 seconds; 100 concurrent streaming executions; 10 concurrent users. |
 | `TEST-702` | Performance tests **MUST** run as part of the release process. Regressions **MUST** block release. |
 | `TEST-703` | Performance tests **MUST** measure latency percentiles (P50, P95, P99), not averages alone. |
 

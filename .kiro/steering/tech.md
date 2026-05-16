@@ -15,7 +15,7 @@ Vigil ships as two editions: **Community Edition (CE, AGPL v3)** and **Enterpris
 - **Background jobs:** **Oban** (Postgres-backed; cron, retries, per-queue concurrency)
 - **Eventing:** **Phoenix.PubSub** for in-node and cross-node messaging
 - **HTTP client:** **Finch + Req** (pooled, telemetry-integrated)
-- **Caching:** **ETS** keyed by `integration + capability + principal scope` (no Redis)
+- **Caching:** **ETS** keyed by `integration + capability` — shared, unfiltered; RBAC filtering at presentation time (no Redis)
 - **Circuit breaker:** `:fuse` or equivalent GenServer, one per integration capability
 - **Auth:** `argon2_elixir` (local), `openid_connect` (OIDC — CE), `Samly`/`esaml` (SAML — EE), `Exldap` wrapped in `NimblePool` (LDAP — EE)
 - **Observability:** `:telemetry`, `TelemetryMetricsPrometheus`, `LoggerJSON`

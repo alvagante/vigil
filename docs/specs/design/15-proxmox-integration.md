@@ -562,7 +562,7 @@ end
 
 ## 15.10 Acceptance criteria alignment
 
-PRD §9.5 (Acceptance criteria for Phase 1b) — Proxmox-specific items:
+PRD §9.5 acceptance criteria — Proxmox-specific Phase 1 items:
 
 | Criterion | Realized by |
 |-----------|-------------|

@@ -198,7 +198,7 @@ AWS and Azure provisioning are moved out of Phase 1. Proxmox (FS 10) covers the 
 - [ ] Tools don't flood upstream APIs (caching works correctly).
 - [ ] An external MCP-capable client can discover and invoke the tools.
 
-**Required tests:** Tool response shape correctness; RBAC enforcement at the MCP surface; rate limit behavior; cache scope per principal.
+**Required tests:** Tool response shape correctness; RBAC enforcement at the MCP surface; rate limit behavior; shared-cache filtering correctness.
 
 ## 20.14 Feature Set 13 — AI-Assisted Inference
 

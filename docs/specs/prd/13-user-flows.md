@@ -110,7 +110,7 @@ This section describes the principal end-to-end scenarios. Each flow is the inte
 | 2 | The agent submits the report to PuppetDB. |
 | 3 | On the next data refresh (or via push notification, where configured), Vigil detects the new report. |
 | 4 | The platform extracts change events from the report — three events for the three changed resources. No-op resources (unchanged) **MUST NOT** produce events. |
-| 5 | Three Journal Entries are created, attributed to Puppet, grouped under the report ID. |
+| 5 | Three external journal entries are normalized for display, attributed to Puppet, and grouped under the report ID. They are not persisted locally; PuppetDB remains the source of truth. |
 | 6 | The operator viewing the node's journal sees the three changes grouped together, with drill-down available to the full report and per-resource detail. |
 | 7 | A subsequent Puppet run that produces no changes (steady state) **MUST NOT** create journal entries. |
 

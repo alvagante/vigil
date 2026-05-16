@@ -516,7 +516,7 @@ Expected latency for journal rendering:
 | All sources for one node (3-4 integrations) | 500ms-1.5s total (progressive) |
 | Global timeline (all sources, recent window) | 1-2s total (progressive) |
 
-These are acceptable for a 5-user ops team. The progressive rendering pattern means the user sees *something* immediately and the view fills in over 1-2 seconds.
+These are acceptable for a 10-user ops team. The progressive rendering pattern means the user sees *something* immediately and the view fills in over 1-2 seconds.
 
 ### 7.13.1 Short-term ETS cache for navigation
 

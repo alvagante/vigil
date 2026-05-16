@@ -23,7 +23,7 @@ A Priority 2 or Priority 3 plugin's full specification is to be drafted at the s
 
 **Scope notes:** GCE instance lifecycle and discovery; group derivation from labels, projects, regions, and zones. Multiple projects per integration. Authentication via service account JSON or workload identity. Journal populated from Cloud Audit Logs in real time. RBAC: GCP IAM permissions are the upstream constraint; plugin documents required roles.
 
-**Comparable to:** AWS / Azure plugins (see [section 9](09-priority-1b-integrations.md)). Implementation parity with the cloud Phase 1b plugins is expected.
+**Comparable to:** AWS / Azure plugins (see [section 9](09-priority-1b-integrations.md)). Implementation parity with the Phase 2a cloud plugins is expected.
 
 ### 10.2.2 Icinga / Nagios
 
