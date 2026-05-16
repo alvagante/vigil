@@ -1,0 +1,2 @@
+## KiroGraph
+@.kirograph/claude.md
