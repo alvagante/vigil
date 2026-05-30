@@ -10,6 +10,7 @@ defmodule Vigil.Plugin.MixProject do
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
       elixir: "~> 1.19",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -22,6 +23,11 @@ defmodule Vigil.Plugin.MixProject do
       mod: {Vigil.Plugin.Application, []}
     ]
   end
+
+  # The reference no-op plugin (PLUG-702) is compiled only in the test env; it
+  # exercises the platform contract without shipping in releases.
+  defp elixirc_paths(:test), do: ["lib", "test/reference_plugin"]
+  defp elixirc_paths(_), do: ["lib"]
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
