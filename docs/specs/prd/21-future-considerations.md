@@ -35,106 +35,65 @@ The CLI exists for three audiences:
 - The CLI **MUST NOT** require its own configuration of integrations — it talks to a configured Vigil deployment.
 - The CLI **SHOULD** support config file resolution consistent with common terminal-tool conventions (project-local file, user file, env-var override).
 
-## 21.2 Scheduled executions
+## 21.2 Items moved into committed scope
 
-Cron-like scheduling for recurring commands, tasks, plans, and playbooks.
+The following items were noted as "considered but not committed" in earlier drafts. They now live in the committed roadmap and **MUST NOT** be duplicated here:
 
-### 21.2.1 Purpose
+| Item | Destination | Reference |
+|------|-------------|-----------|
+| Scheduled executions | FS EE-5 (EE) | [`docs/specs/editions.md`](../editions.md), [roadmap §20.16](20-implementation-roadmap.md#2016-phase-2--enterprise-edition) |
+| Custom dashboards | FS EE-7 (EE) | Same |
+| Outbound webhooks | FS EE-6 (EE) | Same |
+| Multi-tenancy | FS EE-8 (EE) | Same |
+| Approval workflows | FS EE-3 (EE) | Same |
 
-Many operational tasks are inherently periodic: nightly snapshots, weekly compliance scans, hourly cache warmers. Today these run from external schedulers; bringing them inside Vigil unifies the audit trail and uses the same RBAC, allowlists, and execution integrations the rest of the system already enforces.
+The identifier ranges previously used for these items in earlier drafts (`FUT-101..107`, `FUT-201..207`, `FUT-301..302`, `FUT-401..402`, `FUT-501..503`) are **preserved as pointers**: per the document convention in [00-index.md](00-index.md#requirement-identifier-prefixes) ("Once assigned, an ID is not reused even if its requirement is removed"), these IDs remain valid references. Where they appear in the PRD or design documents, they now denote the corresponding requirement as implemented in its EE feature set — not a future aspiration. The legacy text for each is listed below for traceability; the authoritative requirement lives in the feature set's acceptance criteria ([§20.16 of the roadmap](20-implementation-roadmap.md#2016-phase-2--enterprise-edition)) and the edition spec.
 
-### 21.2.2 Capabilities
+### 21.2.1 Scheduled executions — identifiers `FUT-101..107`
 
-| ID | Future requirement |
-|----|--------------------|
-| `FUT-101` | The platform **SHOULD** support scheduled execution definitions: an execution integration, an artifact (command/task/playbook/plan), parameters, target spec, schedule expression, and ownership (the user / role on whose authority the schedule runs). |
-| `FUT-102` | Schedule expressions **SHOULD** support cron-style timing and human-friendly intervals ("every 6 hours"). Timezone disambiguation is mandatory. |
-| `FUT-103` | The platform **SHOULD** maintain scheduled-execution history with the same persistence as ad-hoc executions: full transcript, exit status, journal entries per target. |
-| `FUT-104` | The platform **SHOULD** alert on scheduled execution failures — at minimum via the integration status / system event surface; optionally via outbound notification to configurable channels. |
-| `FUT-105` | The platform **SHOULD** support pause / resume of a schedule and ad-hoc "run now" execution outside the schedule. |
-| `FUT-106` | The platform **SHOULD** evaluate RBAC and allowlists against the schedule's owning principal at *execution time*, not at schedule-creation time, so revoked permissions stop the schedule from running. |
-| `FUT-107` | The platform **SHOULD** prevent overlapping runs of the same schedule by default (configurable per schedule). |
+Implemented as **FS EE-5** (EE). The FUT identifiers remain valid as pointers to the EE feature set:
 
-### 21.2.3 Design constraints
+- `FUT-101..107` are satisfied by FS EE-5 acceptance criteria.
+- `FUT-106` specifically — RBAC-at-execution-time — is called out as a first-class requirement of both FS EE-5 and `RBAC-108` (bounded-query evaluation), which applies at scheduled-execution run time.
 
-- Scheduled executions **MUST NOT** bypass any of the security controls that govern interactive execution (RBAC, allowlists, granular permissions, concurrency limits).
-- The platform **MUST NOT** introduce a third execution code path. Scheduled executions are interactive executions, just triggered by the scheduler instead of a user click.
-- The schedule itself is configuration; modifying a schedule **MUST** be auditable.
+### 21.2.2 Custom dashboards — identifiers `FUT-201..207`
 
-## 21.3 Custom dashboards
+Implemented as **FS EE-7** (EE).
 
-User-configurable dashboard views composed from widgets.
+### 21.2.3 Outbound webhooks — identifiers `FUT-301..302`
 
-### 21.3.1 Purpose
+Implemented as **FS EE-6** (EE).
 
-Different roles need different first-screen views: an SRE wants alert state and recent failures; an infrastructure lead wants integration health and capacity; an auditor wants change volume and audit trail summaries. A fixed home page can't serve all of them; configurable dashboards can.
+### 21.2.4 Multi-tenancy — identifiers `FUT-401..402`
 
-### 21.3.2 Capabilities
+Implemented as **FS EE-8** (EE). `FUT-401` remains the canonical pointer for the "tenant-ready schema" decisions made across the CE data model — those decisions stand regardless of which edition activates the tenant resolver.
 
-| ID | Future requirement |
-|----|--------------------|
-| `FUT-201` | The platform **SHOULD** allow users to create custom dashboard views composed from a catalog of widgets. |
-| `FUT-202` | Widget types **SHOULD** include at minimum: node count by group/source/status, recent journal entries with filter, integration health summary, recent execution history, custom query results, manual notes panel. |
-| `FUT-203` | Dashboards **SHOULD** be shareable across users — a user creates a dashboard and grants others read or edit access, scoped per dashboard. |
-| `FUT-204` | Dashboards **MUST** respect the viewing user's RBAC — widgets render only data the viewing user is permitted to see, regardless of who authored the dashboard. |
-| `FUT-205` | Dashboards **SHOULD** support refresh intervals per widget so a dashboard is self-updating when left open. |
-| `FUT-206` | A user **MAY** designate a dashboard as their default home page. |
-| `FUT-207` | The platform **MAY** ship a small set of pre-built dashboards (e.g., "SRE on-call view", "Audit overview") as starting points users can clone and customize. |
+### 21.2.5 Approval workflows — identifiers `FUT-501..503`
 
-### 21.3.3 Design constraints
+Implemented as **FS EE-3** (EE).
 
-- Dashboards **MUST NOT** introduce new query capabilities beyond what's already exposed via the API. Widgets are presentation; data sources are platform APIs.
-- Dashboards **MUST** scale — a dashboard with 12 widgets refreshing every 30 seconds **MUST NOT** measurably impact platform load at the target scale.
-- Dashboard configuration **MUST** be portable: users **SHOULD** be able to export a dashboard config and import it into another deployment.
-
-## 21.4 Other deferred ideas
-
-The following are explicitly noted as "considered but not committed." They are not roadmap items — they are signposts to keep the architecture friendly to future direction without committing to it.
-
-### 21.4.1 Webhook outbound
-
-| ID | Future requirement |
-|----|--------------------|
-| `FUT-301` | The platform **MAY** support outbound webhooks on events of interest (significant journal entries, execution completion, provisioning state transitions, integration health changes) so external systems can react. |
-| `FUT-302` | Webhook deliveries **MUST** include retry with exponential backoff and signed delivery for authenticity. |
-
-### 21.4.2 Multi-tenant deployment
-
-| ID | Future requirement |
-|----|--------------------|
-| `FUT-401` | The platform **MAY** support multi-tenant deployments where one Vigil installation serves multiple isolated tenants with no data cross-leakage. |
-| `FUT-402` | Multi-tenancy is a substantial scope expansion — most likely it would be a separate product variant rather than a flag on the existing product. |
-
-### 21.4.3 Approval workflows
-
-| ID | Future requirement |
-|----|--------------------|
-| `FUT-501` | The platform **MAY** support approval workflows for high-impact actions (production provisioning, destructive lifecycle operations, environment deployment) — the action is queued until an authorized approver releases it. |
-| `FUT-502` | Approval state **MUST** be auditable. |
-| `FUT-503` | This is a significant scope expansion and would likely warrant its own feature set rather than being retrofitted. |
-
-### 21.4.4 Drift detection cross-tool
+## 21.3 Drift detection cross-tool
 
 | ID | Future requirement |
 |----|--------------------|
 | `FUT-601` | The platform **MAY** synthesize cross-tool drift detection — e.g., comparing observed Facts to declared Configuration to highlight nodes whose actual state diverges from desired state, when both sources are available. |
 | `FUT-602` | Such detection **MUST** be an analysis layer over the existing data, not a new data acquisition surface. |
 
-### 21.4.5 Read-only public views
+## 21.4 Read-only public views
 
 | ID | Future requirement |
 |----|--------------------|
 | `FUT-701` | The platform **MAY** support sharable, read-only views of selected dashboards or node detail pages for incident communication or stakeholder updates, with explicit time-bounded access tokens. |
 | `FUT-702` | Public views **MUST** redact sensitive data and **MUST** be revocable. |
 
-### 21.4.6 Mobile companion
+## 21.5 Mobile companion
 
 | ID | Future requirement |
 |----|--------------------|
 | `FUT-801` | The platform **MAY** ship a mobile companion (native or PWA) optimized for on-call response: receive alerts, acknowledge them, view the affected node's recent journal, run a small set of pre-approved remediation playbooks. |
 | `FUT-802` | The mobile companion **MUST** authenticate, enforce RBAC, and operate against the same API as the web UI. It is a constrained client, not an alternate stack. |
 
-## 21.5 Things that will NOT be added
+## 21.6 Things that will NOT be added
 
 These are noted to prevent scope creep:
 
@@ -142,13 +101,13 @@ These are noted to prevent scope creep:
 - **Vigil-native monitoring.** Same reasoning. Vigil reads monitoring; it does not produce it.
 - **Cloud cost or budget management.** Out of scope per [section 3](03-scope.md) and remains so.
 - **A Kubernetes workload management UI.** Node-level visibility is the limit. Workload management belongs in tools built for it.
-- **Multi-tenant SaaS hosted by the project.** The product is self-hosted. A future commercial entity might offer SaaS, but that's not a roadmap item for the open product.
+- **Multi-tenant SaaS hosted by the project.** The product is self-hosted; EE multi-tenancy (FS EE-8) addresses on-premise MSP and multi-BU cases. Project-operated SaaS is not a roadmap item for the open product.
 
 | ID | Anti-requirement |
 |----|------------------|
-| `FUT-901` | The platform **MUST NOT** add the items listed in section 21.5 without an explicit, deliberate scope amendment that revisits the product's first principles in [section 1.4](01-executive-summary.md#14-product-principles). |
+| `FUT-901` | The platform **MUST NOT** add the items listed in section 21.6 without an explicit, deliberate scope amendment that revisits the product's first principles in [section 1.4](01-executive-summary.md#14-product-principles). |
 
-## 21.6 How to request a future feature
+## 21.7 How to request a future feature
 
 A future feature request earns its way into the document by:
 

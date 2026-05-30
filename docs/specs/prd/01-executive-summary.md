@@ -42,7 +42,7 @@ Vigil does not build its own configuration management. It does not store its own
 | `EXS-001` | The system **MUST** support managed inventories of several thousand nodes (target: 10,000) without functional degradation. |
 |-----------|---|
 | `EXS-002` | The system **MUST NOT** scale aggregate latency linearly with the number of integrations enabled — adding integrations **MUST NOT** make the inventory page slower than its slowest source. |
-| `EXS-003` | The system **MUST** support concurrent active users (target: 50) without queuing read requests. |
+| `EXS-003` | The system **MUST** support concurrent active users (target: 10) without queuing read requests. |
 | `EXS-004` | The system **MUST** support concurrent streaming executions (target: 100 simultaneous streams) without dropping output. |
 | `EXS-005` | The system **MUST NOT** issue redundant calls to upstream tool APIs when multiple users request the same data within a cache window. |
 | `EXS-006` | The system **MUST** continue serving cached data when an upstream tool is unreachable, marking it as stale rather than removing it. |

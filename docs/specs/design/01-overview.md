@@ -61,8 +61,8 @@ Vigil is a single Elixir umbrella application rendering HTML over WebSockets via
 > **Decision: PostgreSQL is the only persistent store.**
 > Journal, executions, configuration, audit, users, roles, linking overrides, retention — all PostgreSQL. No Redis for caching, no Elasticsearch for search, no time-series DB for history. We get strong consistency for RBAC and audit, JSONB for the heterogeneous payloads journal and reports carry, full-text search for journal content, and SKIP LOCKED for job queues. Scale at 10,000 nodes is well inside what a single PostgreSQL instance handles.
 
-> **Decision: Caching in ETS, keyed by integration + capability + principal scope.**
-> `CACHE-006` requires cache keys scoped to the requesting principal's permission scope. An external cache with per-principal namespacing is buildable but adds an operational dependency for a problem ETS solves in-node with no network hop. Cache sizes are bounded per integration, eviction is LRU, and invalidation is a `:ets.select_delete/2`.
+> **Decision: Caching in ETS, keyed by integration + capability + call arguments.**
+> `CACHE-006` requires shared, unfiltered integration responses. RBAC target-scope filtering happens after cache lookup and before presentation or API/MCP response construction. This avoids per-principal cache fragmentation while keeping authorization enforcement at the application boundary. Cache sizes are bounded per integration, eviction is LRU, and invalidation is a `:ets.select_delete/2`.
 
 > **Decision: Oban for background jobs.**
 > Health checks, scheduled inventory refresh, AI calls, retention purges — all are background work. Oban gives us persisted jobs in PostgreSQL, cron scheduling, retries with backoff, per-queue concurrency limits, and a dashboard. No external broker. PRD `FUT-101` (scheduled executions) plugs into the same layer.
@@ -83,8 +83,8 @@ Vigil is a single Elixir umbrella application rendering HTML over WebSockets via
 
 | Concern | Library / tool | Rationale |
 |---------|---------------|-----------|
-| Web framework | **Phoenix 1.7+** | Target framework; stable LiveView |
-| UI rendering | **Phoenix LiveView 0.20+** | Server-rendered interactive UI over WebSocket |
+| Web framework | **Phoenix 1.8+** | Target framework; stable LiveView |
+| UI rendering | **Phoenix LiveView 1.1+** | Server-rendered interactive UI over WebSocket |
 | HTML components | **Phoenix.Component + LiveView.JS** | Typed function components; minimal JS |
 | Styling | **Tailwind CSS + Phoenix UI primitives** | Predictable, utility-first; works well with LiveView |
 | ORM | **Ecto 3.x** | First-class for PostgreSQL |
@@ -111,32 +111,33 @@ The stack is deliberately boring. Every library named here is widely used in pro
 
 - **No GraphQL.** The UI is LiveView, not a SPA. The API is REST-ish for the CLI and MCP server. A GraphQL layer would duplicate Ecto's composition.
 - **No Redis.** ETS for caching; Oban for queues; PubSub for eventing. Each replaces a common Redis use case with an in-node primitive.
-- **No Elasticsearch.** PostgreSQL full-text search covers journal content search. `tsvector` with a GIN index is within target at 10,000 nodes × reasonable journal entry volume.
+- **No Elasticsearch.** Journal search is limited to entries currently loaded in the browser; deep historical search stays in source-native tools per PRD `JRN-103`.
 - **No separate TSDB.** Per PRD `SCOPE-111`, Vigil does not store metrics. Monitoring data is read through at query time and cached short-term in ETS.
 - **No service mesh.** Single-node deployment is the default. Multi-node deployment uses BEAM distribution (libcluster) only for sharing PubSub across nodes when horizontal scaling is needed.
 - **No frontend build system beyond esbuild.** Tailwind runs via the Phoenix-integrated plugin. No Webpack, no Vite, no React.
 
 ## 1.5 Application boundaries
 
-The umbrella application is split into these child applications, described fully in [section 2](02-application-topology.md):
+The Phase 1 CE umbrella application is split into these child applications, described fully in [section 2](02-application-topology.md):
 
 | Application | Purpose |
 |-------------|---------|
-| `vigil_core` | Domain logic: inventory, journal, execution, RBAC, audit. Ecto schemas and contexts. No web. No integrations. |
+| `vigil_core` | Domain logic: inventory, journal, execution, RBAC, audit. Ecto schemas and contexts. Defines extension behaviours (`Vigil.Auth.Provider`, `Vigil.Audit.Exporter`, `Vigil.Execution.ApprovalGate`, `Vigil.Cluster.Backend`, `Vigil.Webhook.Dispatcher`, `Vigil.Scheduler.Backend`, `Vigil.Dashboard.Store`, `Vigil.Tenant.Resolver`) with no-op or minimal CE defaults. No web. No integrations. |
 | `vigil_plugin` | Plugin behaviour definitions, dispatch, lifecycle, conformance suite. No specific plugins. |
 | `vigil_web` | Phoenix endpoint, LiveView modules, controllers, API (including MCP). Depends on core + plugin. |
-| `vigil_integrations_puppet` | Puppet plugin. |
-| `vigil_integrations_bolt` | Bolt plugin. |
-| `vigil_integrations_ansible` | Ansible plugin. |
-| `vigil_integrations_ssh` | SSH plugin. |
-| `vigil_integrations_proxmox` | Proxmox plugin. |
-| `vigil_integrations_aws` | AWS plugin. |
-| `vigil_integrations_azure` | Azure plugin. |
+| `vigil_auth_oidc` | CE OIDC provider (single IdP, literal group-to-role mapping). Implements `Vigil.Auth.Provider`. |
+| `vigil_integrations_puppet` | Puppet plugin (Phase 1 CE). |
+| `vigil_integrations_bolt` | Bolt plugin (Phase 1 CE). |
+| `vigil_integrations_ansible` | Ansible plugin (Phase 1 CE). |
+| `vigil_integrations_ssh` | SSH plugin (Phase 1 CE). |
+| `vigil_integrations_proxmox` | Proxmox plugin (Phase 1 CE). |
 | `vigil` (root) | Orchestrating application that starts all the children in the right order. |
+
+AWS and Azure are deferred to **Phase 2a** per PRD §20. When built, they join the same umbrella pattern as `vigil_integrations_aws` and `vigil_integrations_azure`; those apps do not exist in Phase 1. The AWS/Azure specs remain in PRD section 9 as the authoritative reference for that work. Enterprise Edition features (SAML, LDAP, multi-IdP OIDC, HA, approvals, SIEM export, scheduled executions, webhooks, custom dashboards, multi-tenancy) live in a separate `vigil_enterprise` umbrella outside this repository and are delivered in **Phase 2b**, not concurrently with Phase 1. They register into CE's extension points at runtime. CE works fully without EE loaded.
 
 Each integration is its own OTP application because:
 
-1. Dependencies are isolated — AWS SDK brings heavy transitive deps the SSH plugin does not need.
+1. Dependencies are isolated — AWS SDK (when added in Phase 2a) brings heavy transitive deps the SSH plugin does not need.
 2. Per-plugin enable/disable (`PLUG-206`) is a matter of starting or stopping the child application.
 3. Community plugins follow exactly the same pattern — an OTP application declaring a dependency on `vigil_plugin`.
 

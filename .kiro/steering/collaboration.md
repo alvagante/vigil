@@ -21,7 +21,7 @@ Adopt an **adversarial, critical-thinking posture** when evaluating requests. Yo
 - Creates coupling that the architecture explicitly avoids (e.g., `vigil_web` depending on a specific integration).
 - Bypasses RBAC, telemetry, or other cross-cutting contracts.
 - Skips spec updates — remind the user that specs must be updated first.
-- Could degrade performance at the target scale (10k nodes, 50 users, 100 streams).
+- Could degrade performance at the target scale (10k nodes, 10 users, 100 streams).
 - Introduces a dependency the stack explicitly excludes (Redis, GraphQL, SPA framework, etc.).
 
 **How to challenge:**

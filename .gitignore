@@ -1,0 +1,327 @@
+# =============================================================================
+# Vigil — .gitignore
+# Elixir / Phoenix umbrella project with AI-assisted development tooling.
+#
+# Convention: project-shared instructions (CLAUDE.md, .kiro/steering/, etc.)
+# ARE tracked. Per-user / per-machine / ephemeral state from AI tools is NOT.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Elixir / Erlang / OTP
+# -----------------------------------------------------------------------------
+
+# Compiled artifacts
+/_build/
+**/_build/
+*.beam
+*.ez
+
+# Fetched dependencies — pulled by `mix deps.get`
+/deps/
+**/deps/
+
+# Generated documentation
+/doc/
+**/doc/
+
+# Dialyzer PLT files (per-machine, slow to rebuild — keep local)
+/priv/plts/
+**/priv/plts/
+*.plt
+*.plt.hash
+
+# Test coverage output
+/cover/
+**/cover/
+*.coverdata
+
+# Crash dumps
+erl_crash.dump
+*.dump
+
+# REPL history
+.iex_history
+.erlang_history
+
+# Mix release tarballs and assembled releases (built artifacts, not source)
+/rel/artifacts/
+*.tar
+*.tar.gz
+
+# Note: mix.lock IS committed — applications need a locked dependency set.
+# (Comment intentionally retained as documentation; do NOT add mix.lock here.)
+
+
+# -----------------------------------------------------------------------------
+# Phoenix
+# -----------------------------------------------------------------------------
+
+# Built asset output from esbuild / tailwind. Phoenix builds these into
+# priv/static/assets/; the source lives in assets/ and is what gets committed.
+/priv/static/assets/
+/priv/static/cache_manifest.json
+/priv/static/*.gz
+
+# Phoenix's runtime-generated digest files
+/priv/static/uploads/
+
+# Frontend dependencies (if any JS tooling is used beyond Phoenix defaults)
+/assets/node_modules/
+/assets/bower_components/
+
+# Per-app variants in the umbrella
+apps/*/_build/
+apps/*/deps/
+apps/*/cover/
+apps/*/priv/plts/
+apps/*/priv/static/assets/
+apps/*/priv/static/cache_manifest.json
+
+
+# -----------------------------------------------------------------------------
+# Secrets and runtime configuration
+# -----------------------------------------------------------------------------
+
+# Local environment files (use only locally; never commit)
+.env
+.env.local
+.env.*.local
+.envrc
+
+# Per-environment secret config — only `dev.exs`, `test.exs`, `prod.exs`,
+# `runtime.exs`, and the shared `config.exs` are committed.
+config/*.secret.exs
+config/dev.secret.exs
+config/prod.secret.exs
+
+# Phoenix's older secret-file pattern (pre-1.5)
+config/prod.secret.exs
+
+# Mix release runtime overrides typically generated on the deploy host
+/releases/
+
+# TLS material and credentials accidentally placed in the tree
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+*.jks
+secrets/
+.secrets/
+
+
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
+
+# Local dumps, snapshots, and ad-hoc backups
+*.sql.gz
+*.dump
+*.pgdump
+*.sqlite
+*.sqlite3
+*.db
+
+# PostgreSQL access files (never in repo)
+.pgpass
+
+
+# -----------------------------------------------------------------------------
+# Logs
+# -----------------------------------------------------------------------------
+
+*.log
+logs/
+log/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# -----------------------------------------------------------------------------
+# Editors / IDEs
+# -----------------------------------------------------------------------------
+
+# VS Code — keep `.vscode/extensions.json` and `.vscode/settings.json` if the
+# team wants shared editor config; ignore the rest.
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# JetBrains (IntelliJ / RubyMine / etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Vim / Neovim
+*.swp
+*.swo
+*.swn
+.netrwhist
+Session.vim
+.vim/
+
+# Emacs
+*~
+\#*\#
+.\#*
+.elc
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Helix
+.helix/
+
+# Zed
+.zed/
+
+# ElixirLS (LSP server cache)
+.elixir_ls/
+**/.elixir_ls/
+
+# Language Server Protocol generic caches
+.lsp/
+.cache/
+
+
+# -----------------------------------------------------------------------------
+# Operating systems
+# -----------------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+Icon?
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+.directory
+.fuse_hidden*
+.Trash-*
+
+
+# -----------------------------------------------------------------------------
+# AI-assisted development tools
+#
+# Pattern: project-shared instructions (committed) vs. per-user/ephemeral
+# state (ignored). When a tool has both, ignore the directory wholesale and
+# then re-include the shared parts with `!` rules.
+# -----------------------------------------------------------------------------
+
+# Claude Code — track project settings + prompts, ignore local overrides
+.claude/*
+!.claude/settings.json
+!.claude/commands/
+!.claude/prompts/
+# (.claude/settings.local.json carries per-user preferences — keep out)
+
+# CLAUDE.md is the project's shared instruction file. It IS committed.
+# (No rule needed; this comment exists so future contributors know.)
+
+# Kiro — track steering/hooks/settings (already committed), ignore drafts
+# and summaries that accumulate per-session.
+.kiro/drafts/
+.kiro/cache/
+# (`.kiro/summaries/` is selectively committed — leave individual files to
+#  the author's discretion; do not ignore the whole directory.)
+
+# Cursor — track shared rules; ignore session state
+.cursor/
+!.cursorrules
+!.cursor/rules/
+
+# Aider
+.aider*
+.aiderignore
+
+# Continue.dev
+.continue/
+
+# Cline / Roo Code
+.cline/
+.clinerules
+.cline_history
+
+# Windsurf
+.windsurf/
+.windsurfrules
+
+# Codeium
+.codeium/
+
+# Sourcegraph Cody
+.cody/
+.sourcegraph/
+
+# GitHub Copilot — chat history caches (rare; tool generally stores in OS)
+.copilot/
+
+# Tabby ML
+.tabby/
+
+# SpecStory (cross-tool conversation log)
+.specstory/
+
+# Generic AI session caches
+.ai_history
+.ai_session/
+.llm_cache/
+
+
+# -----------------------------------------------------------------------------
+# Build / packaging / CI
+# -----------------------------------------------------------------------------
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Kubernetes generated manifests
+*.kubeconfig
+
+# Terraform state (if ever used for deployment infra)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Coverage reports uploaded by CI tools
+coverage/
+.nyc_output/
+
+
+# -----------------------------------------------------------------------------
+# Miscellaneous
+# -----------------------------------------------------------------------------
+
+# Patch / rejection files from `git apply` / `patch`
+*.orig
+*.rej
+
+# Temp / scratch directories — useful for local experiments
+/tmp/
+/scratch/
+/.scratch/
+
+# Output of `mix format --check-formatted` and similar
+.formatter_check

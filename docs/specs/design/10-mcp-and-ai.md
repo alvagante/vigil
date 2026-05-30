@@ -125,7 +125,7 @@ Tools run under the token's principal. The same `Vigil.Core.RBAC.Evaluator` used
 - Cannot execute commands, provision, or configure anything.
 - Cannot access other users' private data.
 
-The cache used by the dispatcher is keyed by principal scope (`MCP-203`), so a cache entry computed for an admin isn't returned to an MCP service account with narrower scope.
+MCP tools use the same shared, unfiltered integration cache as the web UI (`MCP-203`, `CACHE-006`). A tool constructs its response only after applying the token principal's compiled RBAC target-scope filter, so an admin and a narrower MCP service account may hit the same cache entry but never receive the same filtered payload unless their scopes match. MCP filtering follows the same `RBAC-110` constraint as the web UI: resolve effective scope once, then filter cached records through bounded membership or indexed predicate checks.
 
 ### 10.1.7 Rate limiting
 
@@ -143,6 +143,15 @@ end
 ```
 
 Defaults: 120 requests per minute per principal; configurable per token on issuance.
+
+> **Decision: Rate limits are enforced per-node in multi-node deployments.**
+> `Hammer`'s default backend is ETS — in-process, per-node. In a 3-node cluster, a principal can make up to `3 × 120 = 360` requests per minute before any single node rate-limits them. Per `MCP-202`, the platform documents this enforcement scope rather than paying the cost of a cluster-wide coordinated limiter.
+>
+> Cluster-wide enforcement would require either a distributed counter (Redis — explicitly excluded from the stack) or a Postgres-backed Hammer (adds a per-request DB write on the hot auth path, degrading latency for all MCP calls). For the target deployment scale (10 users, 3-node max for HA), the per-node effective limit is the correct tradeoff.
+>
+> Two mitigations take the edge off the per-node characteristic: (1) operators sizing cluster-aware limits should set per-node limits to `expected_global / node_count` rather than `expected_global`, and (2) the same load-balancer affinity on principal ID that improves cache hit rates (see design/05 §5.11.2) also reduces the rate-limit dilution — stuck-to-one-node principals get the expected global limit.
+>
+> For EE deployments requiring strict cluster-wide enforcement (e.g., per-tenant API quotas as part of FS EE-8 multi-tenancy), a distributed Hammer backend over PostgreSQL may be shipped as an EE optional extension. That is not committed work at this stage.
 
 ### 10.1.8 Tool descriptions
 
@@ -264,25 +273,94 @@ Each feature is a LiveComponent embedded in the relevant page. It shows a "Run a
 
 ### 10.2.4 Secret redaction
 
-Before sending any data to an LLM, `Vigil.AI.Redactor` walks the context and masks:
-
-- Anything marked `secret?: true` by its source schema.
-- Strings matching known secret patterns: JWT-like tokens, AWS access keys, SSH private keys, common API key prefixes.
-- User-supplied patterns from settings.
+Per `AI-303`, secret redaction uses **structured annotation as the primary mechanism** and regex as a backstop. Plugin config schemas mark fields `secret?: true` (see design/03 §3.2.3); fact and event payloads carry optional `__secret_path__` markers that `Vigil.Core.Secrets.Redactor` strips before any prompt is constructed. Regex is applied afterwards, as a second pass, to catch secrets that slipped into opaque string fields from sources that lack structural marking.
 
 ```elixir
 defmodule Vigil.AI.Redactor do
-  @patterns [
-    {~r/sk-[a-zA-Z0-9]{48,}/, "[REDACTED:openai-key]"},
-    {~r/AKIA[A-Z0-9]{16}/,     "[REDACTED:aws-key]"},
-    {~r/-----BEGIN [A-Z ]+PRIVATE KEY-----.+?-----END [A-Z ]+PRIVATE KEY-----/s,
-                                "[REDACTED:private-key]"},
-    {~r/eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+/, "[REDACTED:jwt]"}
-  ]
+  @doc """
+  Applied in order:
+    1. Structured redaction — walk the context, mask every value at a known secret path
+       (per plugin schema annotations) and every key matching a configured deny-list
+       of known-sensitive key names.
+    2. Pattern redaction — only on opaque string values remaining after step 1, mask
+       substrings matching well-known secret patterns.
+
+  Step 1 is the primary mechanism. Step 2 is a backstop for unstructured sources.
+  """
+  def scrub(context) do
+    context
+    |> scrub_structured(schema_registry())
+    |> scrub_patterns(pattern_registry())
+  end
+
+  defp scrub_structured(context, schemas) do
+    Vigil.Core.Traverse.map_leaves(context, fn path, value ->
+      cond do
+        path_is_secret?(path, schemas) -> redacted_marker(:schema_annotated)
+        key_name_sensitive?(path)      -> redacted_marker(:sensitive_key_name)
+        true                            -> value
+      end
+    end)
+  end
+
+  defp scrub_patterns(context, patterns) do
+    Vigil.Core.Traverse.map_leaves(context, fn
+      _path, bin when is_binary(bin) -> apply_patterns(bin, patterns)
+      _path, value -> value
+    end)
+  end
+
+  # The key-name deny list catches common accidents:
+  # values under keys named "password", "api_key", "secret", "token", "private_key",
+  # etc. get redacted regardless of content shape.
+  @sensitive_key_names ~w(password api_key secret token private_key bearer_token
+                          access_key secret_access_key client_secret)
 end
 ```
 
-`AI-303` is satisfied. Test coverage includes property-based tests injecting known secrets into feature contexts and verifying they're scrubbed (`TEST-801`, `TEST-802`).
+**Pattern registry (`AI-303` backstop).** The regex patterns are deliberately broad and maintained by platform operators rather than hard-coded at release:
+
+```elixir
+defmodule Vigil.AI.Redactor.Patterns do
+  @builtin [
+    # Cloud provider access keys
+    {:aws_access_key,    ~r/\bAKIA[0-9A-Z]{16}\b/},
+    {:aws_session_token, ~r/\bASIA[0-9A-Z]{16}\b/},
+    {:gcp_api_key,       ~r/\bAIza[0-9A-Za-z_-]{35}\b/},
+    {:azure_storage_key, ~r/\b[A-Za-z0-9+\/]{86}==\b/},
+
+    # Generic formats
+    {:pem_block,         ~r/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/},
+    {:github_pat,        ~r/\bghp_[A-Za-z0-9]{36}\b/},
+    {:openai_key,        ~r/\bsk-[A-Za-z0-9]{32,}\b/},
+    {:slack_token,       ~r/\bxox[baprs]-[A-Za-z0-9-]+\b/},
+
+    # Bearer / JWT — kept deliberately specific to reduce false positives on
+    # arbitrary base64 payloads. Only matches three-segment tokens in contexts
+    # where the prefix or header suggests JWT.
+    {:jwt_bearer,        ~r/\bBearer\s+eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/}
+  ]
+
+  def all(), do: @builtin ++ operator_defined_patterns()
+end
+```
+
+Key points:
+
+- **Structure-first order is decisive.** If a plugin declares `password` as a secret field in its schema, the value is masked by annotation before any regex ever sees it. This catches the "secret in an unexpected place" class of bug — `:schema_annotated` mask fires even if the value is inside a nested struct or a free-form log line that the regex wouldn't match.
+- **Key-name deny list catches free-form maps.** Facts and events from plugins lacking rigorous schema marking still get protection if their keys look obviously sensitive.
+- **Regex is not the first filter.** The previous design privileged regex patterns — their coverage gaps (loose JWT matching false-positives on base64 facts, PEM regex requires contiguous string) produced both false positives and false negatives. Moving regex behind the structured layer makes regex a high-precision low-frequency tool instead of a high-recall first pass.
+- **JWT pattern is restricted.** The unrestricted `eyJ...` pattern was a known false-positive generator — plenty of fact payloads contain base64 blobs starting with `eyJ` that are not tokens. The restricted pattern requires the `Bearer ` prefix, which eliminates most false positives at the cost of missing raw JWTs in opaque fields. Those raw JWTs get caught by the structured layer if the plugin marks them, or by the key-name deny list if they're stored under a recognisable key. If they're in truly unstructured fact-blob text, we accept the gap as preferable to a broader pattern that redacts legitimate payloads.
+- **PEM pattern handles structured fields.** The PEM regex still requires a contiguous block, but the structured-first pass protects PEM content stored in a `private_key` field regardless of serialization.
+- **GCP and Azure covered.** The previous design covered only AWS. GCP API keys (`AIza` prefix) and Azure storage connection strings now have patterns.
+- **Operator-defined patterns.** Site-specific token formats (internal API keys, vendor-specific credentials) can be added via configuration without a code change.
+
+**Test coverage** (`TEST-801`, `TEST-802`) asserts:
+
+1. A value marked `secret?: true` in a plugin schema is masked even when it appears in unexpected nested paths.
+2. A value stored under a `@sensitive_key_names` key is masked regardless of content.
+3. Each built-in regex masks correctly and does not over-mask documented false-positive candidates.
+4. A synthetic context seeded with representative secrets (structured + unstructured) has no unredacted secret after `scrub/1`.
 
 ### 10.2.5 Data scoping and inspection (`AI-304`, `AI-204`)
 

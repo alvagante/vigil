@@ -308,7 +308,45 @@ The user sees:
 
 Entries arriving from a slow source may be chronologically older than already-rendered entries — they insert at the correct position in the sorted timeline. LiveView streams handle this efficiently.
 
-### 7.6.3 Global timeline
+### 7.6.3 Decommissioned-node journal notice (JRN-202 / DM-1108)
+
+When the viewed node's `lifecycle_state` is `:decommissioned`, the journal LiveView surfaces a persistent banner at the top of the timeline explaining the source-retention consequence spelled out in `JRN-202` and `DM-1108`. Vigil does not archive external events on decommission — external journal history for a decommissioned node is only available for as long as the upstream tool retains it.
+
+`mount/3` adds a `decommissioned?` assign derived from the node row; the template renders the banner conditionally:
+
+```elixir
+def mount(%{"node_id" => node_id}, _session, socket) do
+  node = Vigil.Core.Inventory.get_node!(node_id)
+  # ... existing assigns ...
+  {:ok, socket
+        |> assign(:node, node)
+        |> assign(:decommissioned?, node.lifecycle_state == :decommissioned)
+        # ... other assigns ...
+        }
+end
+```
+
+```heex
+<.callout :if={@decommissioned?} kind={:warning} dismissible={false}>
+  <:title>This node is decommissioned</:title>
+  Vigil-originated entries (executions, manual notes) below are preserved indefinitely
+  (`DM-1108`). External events from <%= integration_names(@node) %> appear only while
+  the upstream tools still retain them; Vigil does not archive external events on
+  decommission. Configure source-side retention
+  (e.g. PuppetDB <code>node-purge-ttl</code>, CloudTrail retention) if long-term external
+  history is required.
+</.callout>
+```
+
+Three behavioural details:
+
+- The banner is **not dismissible**. The retention caveat is operationally important enough that a "don't show again" affordance would create the wrong incentive. A reviewer opening this page weeks after the decommission needs to see the notice.
+- The banner is **per-node**, not global — a decommissioned node's journal page shows it; other pages do not. The text adapts to which journal-contributing integrations the node was attributed to before decommission (sourced from the retained `node_sources` rows).
+- When a fetch from a still-configured integration fails (the upstream has purged the node, returning empty or a 404), the per-source unavailable marker rendered by `pending_sources` / `failed_sources` is the *expected* state — the banner above contextualises it as a retention consequence rather than a fault.
+
+For local entries (executions, manual notes) the timeline behaves normally — these are persisted indefinitely (`DM-1103`, `DM-1108`) and continue to render after decommission without any caveat.
+
+### 7.6.4 Global timeline
 
 Same pattern as per-node, but queries each source for "recent events across all nodes" within the selected time range. Additional filters (node, group, severity) are passed to source APIs where supported, or applied post-fetch.
 
@@ -478,7 +516,7 @@ Expected latency for journal rendering:
 | All sources for one node (3-4 integrations) | 500ms-1.5s total (progressive) |
 | Global timeline (all sources, recent window) | 1-2s total (progressive) |
 
-These are acceptable for a 5-user ops team. The progressive rendering pattern means the user sees *something* immediately and the view fills in over 1-2 seconds.
+These are acceptable for a 10-user ops team. The progressive rendering pattern means the user sees *something* immediately and the view fills in over 1-2 seconds.
 
 ### 7.13.1 Short-term ETS cache for navigation
 

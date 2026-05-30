@@ -83,73 +83,203 @@ Per the [integration matrix](05-integration-matrix.md), Bolt provides Inventory 
 
 ## 8.3 Ansible
 
-Ansible is the agentless configuration management and orchestration tool. The Ansible integration provides Inventory, Facts, and Remote Execution.
+Ansible is the agentless configuration management and orchestration tool. The Ansible integration provides Inventory, Facts, and Remote Execution. Unlike Puppet, Ansible is stateless — it produces no persistent server-side store of facts or run history. Vigil compensates by maintaining its own cache of gathered facts and execution transcripts.
 
-### 8.3.1 Inventory
+The Ansible integration operates against a configured **Ansible project directory**: a directory containing an inventory source and playbooks. Multiple independent Ansible projects may be configured as separate integrations.
+
+### 8.3.1 Capabilities provided
+
+| Capability | Surface |
+|------------|---------|
+| Inventory | Nodes from Ansible inventory (static INI/YAML or dynamic) |
+| Facts | System facts gathered on-demand via the `setup` module |
+| Remote Execution | Ad-hoc commands, playbook execution, package management |
+
+The plugin **MUST NOT** declare Monitoring, Configuration, Events, Provisioning, or Deployment capabilities.
+
+#### Supplementary capabilities
+
+In addition to its generic integration types, the Ansible plugin declares the following supplementary capabilities (see [section 6.7](06-plugin-architecture.md#67-supplementary-capabilities-and-ui-extension-slots)):
+
+| Capability ID | Slot | Description |
+|---------------|------|-------------|
+| `ansible:variable_lookup` | `node_tab` | Per-node variable resolution: all variables effective for this node, their values, and the precedence layer that provided each one |
+| `ansible:variable_explorer` | `global_page` | Cross-inventory variable browser: search for a variable by name across all hosts and groups, see where it is defined and how it resolves per host |
+| `ansible:role_browser` | `global_page` | Browse installed roles and Galaxy collections in the project: role entry points, task lists, role defaults and vars |
+| `ansible:playbook_history` | `global_page` | Cross-node playbook execution history with per-node success/failure trend, last execution time, and link to each transcript |
+
+Each supplementary capability is independently RBAC-gated and hidden entirely when the user lacks the required permission (`PLUG-806`).
+
+### 8.3.2 Inventory
 
 | ID | Requirement |
 |----|-------------|
-| `ANS-101` | The Ansible plugin **MUST** parse Ansible inventory in both static formats (INI, YAML) and dynamic formats (script-based or plugin-based dynamic inventory), invoking `ansible-inventory` or equivalent introspection where dynamic. |
-| `ANS-102` | The plugin **MUST** preserve group hierarchy including nested groups and the special `all` and `ungrouped` groups. |
-| `ANS-103` | The plugin **MUST** preserve host variables and group variables, displaying them in the node detail view with secrets redacted. |
+| `ANS-101` | The Ansible plugin **MUST** parse Ansible inventory in both static formats (INI, YAML) and dynamic formats (script-based or plugin-based dynamic inventory), invoking `ansible-inventory --list` for dynamic sources. |
+| `ANS-102` | The plugin **MUST** preserve group hierarchy including nested groups and the special `all` and `ungrouped` groups, presenting them as Vigil groups. |
+| `ANS-103` | The plugin **MUST** preserve host variables and group variables, making them available in the variable resolution view (`ANS-301`). Sensitive-looking values **MUST** be redacted when rendered in the UI. |
 | `ANS-104` | The plugin **MUST** support multiple Ansible projects as separate integrations, each with its own inventory namespace. |
-| `ANS-105` | The plugin **MUST** report nodes' connection-relevant metadata: user, port, become method, ansible connection plugin where set. |
+| `ANS-105` | The plugin **MUST** report nodes' connection-relevant metadata: connection user, port, become method, Ansible connection plugin where explicitly set. |
+| `ANS-106` | The plugin **MUST** declare its linking confidence as: `ansible_host` (if set and is a resolvable hostname or IP) is the primary linking candidate; the inventory hostname alias is treated as best-effort. The plugin **MUST** declare this confidence level to the platform so the linking engine can apply appropriate weight. |
+| `ANS-107` | When `ansible-inventory --list` returns an error (invalid inventory, missing dependencies), the plugin **MUST** report the error as an integration-level health issue and **MUST NOT** serve a partial or stale inventory without a staleness marker. |
+| `ANS-108` | The plugin **MUST** support scheduled inventory refresh at a configurable interval (default: 15 minutes) and expose an on-demand refresh action (`PLUG-013`). |
 
-### 8.3.2 Facts
-
-| ID | Requirement |
-|----|-------------|
-| `ANS-201` | The Ansible plugin **MUST** gather facts via `ansible -m setup` on demand, against the targets specified by the user. |
-| `ANS-202` | The plugin **MUST NOT** automatically gather facts against all inventory hosts on schedule unless explicitly configured to do so. Default behavior is on-demand fact gathering. |
-| `ANS-203` | Gathered facts **MUST** be cached per node with TTL configurable per integration (default: 1 hour). |
-| `ANS-204` | The plugin **MUST** support optional fact caching against Ansible's own fact cache backends where the user has configured one. |
-| `ANS-205` | The plugin **MUST** declare itself authoritative for the `ansible_*` fact namespace and opportunistic for everything else. |
-
-### 8.3.3 Remote execution
+### 8.3.3 Facts
 
 | ID | Requirement |
 |----|-------------|
-| `ANS-301` | The Ansible plugin **MUST** support ad-hoc command execution via `ansible -m shell` (or `command`/`raw` per user choice) against selected target nodes. |
-| `ANS-302` | The plugin **MUST** support playbook execution via `ansible-playbook` with extra-vars passed as user input. |
-| `ANS-303` | The plugin **MUST** discover available playbooks within the configured project directory and present them with their declared parameter expectations (where parseable). |
-| `ANS-304` | The plugin **MUST** stream output (stdout, stderr) in real time, with per-target attribution where Ansible's output formatting allows extraction. The plugin **MAY** use Ansible callback plugins to enable structured streaming output. |
-| `ANS-305` | The plugin **MUST** preserve the full transcript of every execution. |
-| `ANS-306` | The plugin **MUST** support package management as a built-in capability via the Ansible `package` module: install, remove, update across `apt`, `yum`, `dnf`, `zypper`. |
+| `ANS-201` | The Ansible plugin **MUST** gather facts via `ansible <target> -m setup` on demand, against targets specified by the user. |
+| `ANS-202` | The plugin **MUST NOT** automatically gather facts against all inventory hosts on schedule unless explicitly configured to do so. Default behavior is on-demand fact gathering per node. |
+| `ANS-203` | Gathered facts **MUST** be cached per node with TTL configurable per integration (default: 1 hour). Cached facts **MUST** be served with the timestamp of when they were gathered. |
+| `ANS-204` | The plugin **MUST** support reading from Ansible's own fact cache backends (jsonfile, redis, and others supported by the installed Ansible version) when the user has configured one, using those pre-gathered facts instead of issuing a live `setup` call. Facts sourced from Ansible's cache **MUST** be declared with their own staleness semantics, distinct from Vigil's cache TTL. |
+| `ANS-205` | The plugin **MUST** declare itself authoritative for the `ansible_*` fact namespace. Facts outside that namespace reported by Ansible (custom facts from `facts.d` directories) are declared opportunistic. |
+| `ANS-206` | The plugin **MUST** support custom fact directories (`/etc/ansible/facts.d` and any path configured via `ansible_facts_dir`) and **MUST** include their output in gathered facts. |
+| `ANS-207` | Fact gathering failures against individual nodes (connectivity error, auth failure, timeout) **MUST** be reported per-node and **MUST NOT** abort fact gathering for other nodes in a batch request. |
+| `ANS-208` | The plugin **MUST** expose a minimum set of normalized facts mapped to the platform's common fact schema: OS distribution and version, kernel, hostname, FQDN, IP addresses, CPU count, total memory — derived from standard `ansible_*` fact names. |
 
-### 8.3.4 Configuration schema
+### 8.3.4 Variable resolution
+
+Ansible's variable precedence system is one of its most operationally significant features. A variable's effective value for a given host depends on its source: extra_vars, set_facts, role vars, playbook vars, host_vars, group_vars, role defaults, and others — each with a distinct precedence level. Vigil makes this resolution visible without requiring the user to run a playbook to find out what a variable will be.
+
+**Source.** Variable resolution is performed against a local parsing of the project's `host_vars/` and `group_vars/` directories and by invoking `ansible-inventory --host <hostname>`. It does not require any network access to the target node. Encrypted values (`!vault`) are detected and redacted — their plaintext is never exposed through Vigil.
+
+| ID | Requirement |
+|----|-------------|
+| `ANS-301` | The Ansible plugin **MUST** support per-node variable resolution: given a node, display all variables effective for that node with their current values and the source that set each one (host_vars, group_vars for a specific group, inventory-level group_vars, role defaults). |
+| `ANS-302` | The plugin **MUST** display the variable precedence chain per variable: every source that defines it, in precedence order, with the winning value highlighted. |
+| `ANS-303` | Variables declared in `host_vars/` and `group_vars/` **MUST** be read from the configured project directory. The plugin reads only — it **MUST NOT** modify project files. |
+| `ANS-304` | Ansible Vault-encrypted values **MUST** be detected and displayed as `[encrypted]`. The plugin **MUST NOT** expose plaintext vault values in the UI. If a vault password file or command is configured, the plugin **MAY** offer a decrypt-on-demand action, but **MUST** handle decryption errors gracefully. |
+| `ANS-305` | The plugin **MUST** support cross-inventory variable search: given a variable name, return all hosts and groups where that variable is defined, with the value at each definition site. This powers the `ansible:variable_explorer` supplementary capability. |
+| `ANS-306` | Magic variables (`inventory_hostname`, `groups`, `hostvars`, `ansible_play_hosts`) **MUST** be recognized and labeled as computed/runtime-only in the UI — they are not parsed from static files. |
+| `ANS-307` | Variable resolution **MUST** be scoped to the configured project. Variables from a different Ansible integration instance **MUST NOT** bleed across. |
+
+### 8.3.5 Remote execution
+
+| ID | Requirement |
+|----|-------------|
+| `ANS-401` | The Ansible plugin **MUST** support ad-hoc command execution via `ansible -m shell` (or `command`/`raw` per user choice) against selected target nodes. |
+| `ANS-402` | The plugin **MUST** support playbook execution via `ansible-playbook` with extra-vars passed as user input. |
+| `ANS-403` | The plugin **MUST** discover available playbooks within the configured project directory (by enumeration of `*.yml` and `*.yaml` files at the top level and one level deep) and present them to the user. |
+| `ANS-404` | For each discovered playbook, the plugin **SHOULD** extract declared metadata where parseable: play names, task counts, and any `vars_prompt` declarations (to pre-generate parameter input forms). |
+| `ANS-405` | The plugin **MUST** support the following playbook execution options as UI-exposed parameters: extra-vars (key-value pairs), tags (`--tags`), skip-tags (`--skip-tags`), check mode (`--check`), diff mode (`--diff`), verbosity level. |
+| `ANS-406` | The plugin **MUST** stream stdout and stderr output in real time, with per-target attribution where the structured output format allows extraction. |
+| `ANS-407` | The plugin **MUST** use structured playbook output (via JSON callback or equivalent) to present results in a structured format: per-play, per-task, per-host result, with status (ok, changed, failed, skipped, unreachable). The raw text transcript **MUST** also be preserved in full. |
+| `ANS-408` | The plugin **MUST** preserve the full transcript of every execution, retrievable via execution history. |
+| `ANS-409` | The plugin **MUST** surface the Ansible PLAY RECAP summary — per-host ok/changed/failed/skipped/unreachable counts — as structured metadata on the execution record, not only in the raw transcript. |
+| `ANS-410` | The plugin **MUST** support package management as a built-in capability via the Ansible `package` module: install, remove, update across `apt`, `yum`, `dnf`, `zypper`. |
+| `ANS-411` | The plugin **MUST** discover installed Galaxy roles and collections in the project (`ansible-galaxy list`) and make them available for execution workflows. |
+| `ANS-412` | When an execution fails against some but not all targets, the plugin **MUST** report per-target outcomes: succeeded nodes, failed nodes, unreachable nodes. The overall execution status **MUST** reflect the worst-case result. |
+
+### 8.3.6 Authentication and transport
+
+| ID | Requirement |
+|----|-------------|
+| `ANS-501` | The Ansible plugin **MUST** rely on Ansible's standard connection configuration hierarchy: `ansible.cfg`, inventory variables (`ansible_user`, `ansible_ssh_private_key_file`, `ansible_become`, etc.), and host/group_vars. Vigil **MUST NOT** override or duplicate Ansible's connection model. |
+| `ANS-502` | The plugin **MUST** support SSH key authentication via key files referenced in inventory or configuration. Key file paths **MUST** be treated as secrets-adjacent and **MUST NOT** be logged. |
+| `ANS-503` | The plugin **MUST** support Ansible Vault integration: a vault password file or vault password command **MAY** be provided in integration configuration. The vault credential **MUST** be handled through the platform's secrets-aware mechanism (`PLUG-204`). |
+| `ANS-504` | The plugin **MUST** support `become` execution as configured in inventory or `ansible.cfg`. The become method and become user **MUST** be configurable per integration as a default, overridable by inventory settings. |
+| `ANS-505` | Ansible connection plugins beyond SSH (e.g., `docker`, `kubectl`, `local`, `winrm`) **MUST** be usable if installed and configured in inventory. The plugin defers to Ansible's own connection plugin discovery — Vigil does not enumerate them. |
+| `ANS-506` | WinRM transport for Windows targets **MUST** be usable when configured in inventory (via `ansible_connection: winrm`). Vigil passes through Ansible's WinRM configuration without special handling. |
+| `ANS-507` | The plugin **MUST NOT** disable host-key verification by default. When host key checking is disabled in `ansible.cfg` or inventory, the plugin **MUST** surface this as a warning in the integration administration UI. |
+
+### 8.3.7 Resilience
+
+| ID | Requirement |
+|----|-------------|
+| `ANS-601` | The Ansible plugin **MUST** apply wall-clock and idle timeouts to all CLI invocations. Defaults: wall-clock 1 hour, idle 5 minutes. Both **MUST** be overridable per integration and per execution. |
+| `ANS-602` | The plugin **MUST** detect inventory source failures (non-zero exit from `ansible-inventory`) and report them as integration-level health issues, not per-execution failures. |
+| `ANS-603` | The plugin **MUST** apply per-integration concurrent-execution limits. Excess invocations **MUST** queue or reject based on configuration. |
+| `ANS-604` | If the `ansible` or `ansible-playbook` executable is missing or returns an unexpected version, the plugin **MUST** report this as an initialization failure and mark the integration unhealthy. |
+| `ANS-605` | The plugin **MUST** detect and report the Ansible version at initialization time. The minimum supported Ansible version **MUST** be declared in the plugin manifest. |
+| `ANS-606` | Execution failures against individual nodes (unreachable, auth failure, task failure) **MUST** be reported per-node and **MUST NOT** prevent other nodes' results from being captured. |
+
+### 8.3.8 Caching
+
+| ID | Requirement |
+|----|-------------|
+| `ANS-701` | Cache TTL defaults: inventory 15 minutes, facts 1 hour, variable resolution 15 minutes. All **MUST** be overridable per integration. |
+| `ANS-702` | The plugin **MUST** expose an on-demand cache flush action per capability (inventory only, facts only, variables only, all) and globally (`PLUG-013`). Cache flush **MUST** be RBAC-gated (see `ANS-908`). |
+| `ANS-703` | When Ansible's own fact cache backend is configured as the facts source (`ANS-204`), the cache TTL **MUST** reflect the backend's own expiry setting, and the plugin **MUST** respect it rather than imposing its own TTL on top. |
+| `ANS-704` | Variable resolution results (from static file parsing) **MUST** be invalidated when the project's `host_vars/` or `group_vars/` files change. The plugin **SHOULD** detect modification via filesystem timestamps on each inventory refresh cycle. |
+
+### 8.3.9 Performance at scale
+
+| ID | Requirement |
+|----|-------------|
+| `ANS-801` | The Ansible plugin **MUST** handle inventories of 5,000 nodes without functional degradation. |
+| `ANS-802` | Inventory parsing and fact gathering **MUST** be performed asynchronously; the UI **MUST NOT** block on inventory refresh. |
+| `ANS-803` | Fact gathering against large node sets **MUST** be batched: the plugin **MUST** invoke Ansible with controlled parallelism (via `--forks`) rather than spawning unbounded concurrent processes. |
+| `ANS-804` | The `ansible-inventory --list` output for large inventories may be substantial. The plugin **MUST** parse it without holding the entire JSON representation in memory longer than necessary. |
+| `ANS-805` | Concurrent playbook executions are limited by `ANS-603`. The plugin **MUST** apply a per-integration forks ceiling so that concurrent executions do not collectively exhaust the host's resources. |
+
+### 8.3.10 Configuration schema
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `project_dir` | yes | Path to the Ansible project directory |
-| `ansible_executable` | no | Path to `ansible` binary |
-| `ansible_playbook_executable` | no | Path to `ansible-playbook` binary |
-| `inventory` | no | Inventory path or dynamic inventory script |
-| `vault_password_file` | no | Path to vault password file (handled as secret) |
+| `project_dir` | yes | Path to the Ansible project directory containing inventory and playbooks |
+| `ansible_executable` | no | Path to `ansible` binary (default: `ansible` from PATH) |
+| `ansible_playbook_executable` | no | Path to `ansible-playbook` binary (default: `ansible-playbook` from PATH) |
+| `ansible_galaxy_executable` | no | Path to `ansible-galaxy` binary (default: `ansible-galaxy` from PATH) |
+| `inventory` | no | Path to inventory file or dynamic inventory script; defaults to project dir's detected inventory |
+| `vault_password_file` | no | Path to vault password file (handled as secret; mutually exclusive with `vault_password_command`) |
+| `vault_password_command` | no | Command that outputs the vault password on stdout (handled as secret) |
 | `become_user` | no | Default become user for executions |
-| `concurrency` | no | Default `--forks` value |
-| `timeout.wall_clock` | no | Default wall-clock timeout |
-| `timeout.idle` | no | Default idle timeout |
-
-### 8.3.5 Resilience
-
-| ID | Requirement |
-|----|-------------|
-| `ANS-401` | The Ansible plugin **MUST** apply wall-clock and idle timeouts. Defaults: wall-clock 1 hour, idle 5 minutes. |
-| `ANS-402` | The plugin **MUST** detect Ansible inventory script failures and report them as plugin-level health issues, not as per-execution failures. |
-| `ANS-403` | The plugin **MUST** apply per-integration concurrent-execution limits. |
-
-### 8.3.6 RBAC
+| `become_method` | no | Default become method (`sudo`, `su`, etc.) |
+| `forks` | no | Default `--forks` value for executions (default: Ansible's own default) |
+| `fact_cache_backend` | no | When set, use Ansible's fact cache at this backend path/URL instead of live `setup` calls |
+| `timeout.wall_clock` | no | Default wall-clock timeout per invocation |
+| `timeout.idle` | no | Default idle timeout per invocation |
+| `cache_ttl.inventory` | no | Inventory cache TTL override (default: 15 minutes) |
+| `cache_ttl.facts` | no | Facts cache TTL override (default: 1 hour) |
+| `cache_ttl.variables` | no | Variable resolution cache TTL override (default: 15 minutes) |
+| `circuit_breaker.*` | no | Circuit breaker tuning |
 
 | ID | Requirement |
 |----|-------------|
-| `ANS-501` | Permissions: `ansible:inventory:read`, `ansible:facts:read`, `ansible:command:execute`, `ansible:playbook:execute`, `ansible:package:manage`. |
-| `ANS-502` | Granular per-playbook permissions **MUST** be enforceable. |
+| `ANS-1101` | The Ansible plugin **MUST** validate the configuration above at `initialize` and **MUST** reject configurations that lack a resolvable `project_dir`. |
+| `ANS-1102` | The plugin **MUST** expose a "test connection" action that verifies: Ansible executables are found and meet the minimum declared version, the inventory parses without error, and a minimal connectivity probe can execute. |
 
-### 8.3.7 Journal contributions
+### 8.3.11 RBAC integration
 
 | ID | Requirement |
 |----|-------------|
-| `ANS-601` | Each execution **MUST** generate one journal entry per target node. |
+| `ANS-901` | The Ansible plugin's actions **MUST** be governed by the platform RBAC. The following distinct permissions **MUST** exist: |
+| `ANS-902` | — `ansible:inventory:read` — view nodes and group membership |
+| `ANS-903` | — `ansible:facts:read` — view gathered facts |
+| `ANS-904` | — `ansible:variables:read` — view host and group variables, including the variable explorer supplementary capability |
+| `ANS-905` | — `ansible:command:execute` — execute ad-hoc commands |
+| `ANS-906` | — `ansible:playbook:execute` — execute playbooks |
+| `ANS-907` | — `ansible:package:manage` — perform package management operations |
+| `ANS-908` | — `ansible:cache:flush` — trigger cache flush actions |
+| `ANS-909` | Granular per-playbook permissions **MUST** be enforceable: a role may be granted `ansible:playbook:execute` restricted to specific named playbooks via the platform's command allowlist mechanism (see [section 11.5](11-platform-requirements.md)). |
+| `ANS-910` | `ansible:variables:read` is a distinct permission from `ansible:facts:read` because host_vars and group_vars may contain secrets or operational data the operator does not want all users to see. |
+
+### 8.3.12 Journal contributions
+
+| ID | Requirement |
+|----|-------------|
+| `ANS-1001` | Each execution **MUST** generate one journal entry per target node, summarizing: command or playbook name, exit status, duration, initiating user, and per-node PLAY RECAP counts (ok/changed/failed/unreachable) for playbook runs. The entry **MUST** link to the full transcript. |
+| `ANS-1002` | Failed executions (all targets failed, or non-zero exit) **MUST** generate journal entries with clear failure indication — they **MUST NOT** be silently omitted. |
+| `ANS-1003` | When a user explicitly triggers fact gathering (as opposed to background scheduling), the plugin **MUST** generate a journal entry noting that facts were refreshed, by whom, and when. |
+
+### 8.3.13 Acceptance criteria
+
+The Ansible integration is considered complete when:
+
+1. Static and dynamic inventories are parsed correctly and presented in unified inventory with group hierarchy preserved.
+2. Host linking confidence is correctly declared and respected by the linking engine.
+3. Facts are gathered on demand per node via `setup`, cached with TTL, and served with staleness markers.
+4. Variable resolution shows the full precedence chain for any variable on any node, with vault-encrypted values detected and redacted.
+5. Cross-inventory variable search returns all hosts and groups where a variable is defined.
+6. Ad-hoc command execution works against single and multi-node targets with real-time streaming.
+7. Playbook execution works with tag filtering, check mode, and diff mode; structured per-task output is presented per-host.
+8. PLAY RECAP summary is captured and shown as structured metadata on the execution record.
+9. Package management operations work via the Ansible `package` module against all supported package families.
+10. Wall-clock and idle timeouts terminate overdue processes.
+11. Concurrent execution limits are enforced and the forks ceiling prevents resource exhaustion.
+12. RBAC permissions block unauthorized executions and variable access.
+13. Per-node execution outcomes (ok/changed/failed/unreachable) are captured even when a subset of targets fails.
+14. Journal entries are generated for all executions with per-target detail.
+15. Health checks detect missing executables, broken inventories, and Ansible version incompatibility.
 
 ## 8.4 SSH
 

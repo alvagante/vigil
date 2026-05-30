@@ -6,12 +6,15 @@ This section enumerates the integrations the system targets, organized by priori
 
 Priority levels reflect product order, not architectural distinction. All integrations — regardless of priority — implement the same plugin contract. There is no second-class plugin status.
 
-| Priority | Phase | Description |
-|----------|-------|-------------|
-| **Priority 1 — Core** | Phase 1 | Minimum viable product. Implemented first. Defines the proof of the plugin contract. |
-| **Priority 1b — Core (cloud / hypervisor)** | Phase 1b | Same priority level as core. Implemented after Phase 1 is solid, to keep early focus on the execution and Puppet stack. |
-| **Priority 2 — Next phase** | Phase 2 | Targeted but not blocking initial release. Implemented after Priority 1 has stabilized and the platform contract has been validated. |
-| **Priority 3 — Future / community-driven** | Phase 3+ | Backlog candidates. May be community-contributed. Specified at lower depth. |
+The priority labels are orthogonal to the edition-phase labels in [section 20](20-implementation-roadmap.md): priorities describe *which integrations* ship early; edition phases describe *whether a feature is CE or EE*. All Priority 1 and Priority 1b integrations are CE.
+
+| Priority | Ships in | Description |
+|----------|----------|-------------|
+| **Priority 1 — Core** | CE Phase 1 (FS 2, 4–8) | Minimum viable product. Implemented first. Defines the proof of the plugin contract. |
+| **Priority 1b — Core hypervisor** | CE Phase 1 (FS 10) | Proxmox only. Implemented after the core four are stable, to keep early focus on the execution and Puppet stack. |
+| **Phase 2a — Core cloud** | CE Phase 2a | AWS and Azure. Same plugin contract and capability expectations, deferred until Phase 1 is complete and stable. |
+| **Priority 2 — Next phase** | CE (post-Phase 1) | Targeted but not blocking initial release. Implemented after Priority 1 has stabilized and the platform contract has been validated. Unless flagged otherwise, Priority 2 integrations remain CE. |
+| **Priority 3 — Future / community-driven** | CE (backlog) | Backlog candidates. May be community-contributed. Specified at lower depth. |
 
 | ID | Requirement |
 |----|-------------|
@@ -32,7 +35,7 @@ Priority levels reflect product order, not architectural distinction. All integr
 
 Detailed specifications: [07-puppet-integration.md](07-puppet-integration.md) and [08-priority-1-integrations.md](08-priority-1-integrations.md).
 
-## 5.3 Priority 1b — Core cloud / hypervisor (Phase 1b)
+## 5.3 Priority 1b / Phase 2a — Core provisioning
 
 | Integration | Inv | Facts | Config | Events | Mon | Reports | Exec | Prov | Deploy |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
@@ -93,17 +96,17 @@ Specifications (high-level): [10-priority-2-3-integrations.md](10-priority-2-3-i
 
 The following table aggregates the coverage of each integration type across all priorities, indicating how much choice the operator has at each level.
 
-| Type | P1 / P1b plugins | P2 plugins | P3 plugins | Total |
-|------|:-:|:-:|:-:|:-:|
-| Inventory | 7 | 9 | 14 | 30 |
-| Facts | 5 | 5 | 11 | 21 |
-| Configuration | 1 | 2 | 3 | 6 |
-| Events | 1 | 7 | 9 | 17 |
-| Monitoring | 0 | 5 | 5 | 10 |
-| Reports | 1 | 3 | 4 | 8 |
-| Remote Execution | 3 | 1 | 2 | 6 |
-| Provisioning | 3 | 3 | 4 | 10 |
-| Deployment | 0 | 2 | 3 | 5 |
+| Type | Phase 1 P1 / P1b plugins | Phase 2a cloud plugins | P2 plugins | P3 plugins | Total |
+|------|:-:|:-:|:-:|:-:|:-:|
+| Inventory | 5 | 2 | 9 | 14 | 30 |
+| Facts | 4 | 2 | 5 | 11 | 22 |
+| Configuration | 1 | 0 | 2 | 3 | 6 |
+| Events | 1 | 0 | 7 | 9 | 17 |
+| Monitoring | 0 | 0 | 5 | 5 | 10 |
+| Reports | 1 | 0 | 3 | 4 | 8 |
+| Remote Execution | 3 | 0 | 1 | 2 | 6 |
+| Provisioning | 1 | 2 | 3 | 4 | 10 |
+| Deployment | 0 | 0 | 2 | 3 | 5 |
 
 This is a working estimate; the authoritative count is the matrix above.
 

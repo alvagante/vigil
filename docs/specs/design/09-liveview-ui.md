@@ -255,21 +255,64 @@ Data loading uses progressive rendering per source (5.1.1). Search is debounced 
 Tab-based layout:
 
 ```
-+---------------------------------------------------------+
-|  web-prod-01  [Puppet][Bolt][AWS]  status: running      |
-+---------------------------------------------------------+
-|  [Overview][Facts][Configuration][Journal][Reports]...  |
-|  [Execute][Lifecycle][Deployments][Monitoring]          |
-+---------------------------------------------------------+
-|                                                         |
-|   [tab content loads here, independently]              |
-|                                                         |
-+---------------------------------------------------------+
++----------------------------------------------------------------------+
+|  web-prod-01  [Puppet][Bolt][AWS]  status: running                   |
+|  [ Execute ] [ Decommission ] [ Console (Proxmox) ] [ Snapshot ]     |   <- action bar
++----------------------------------------------------------------------+
+|  [Facts][Configuration][Events / Journal][Run History]               |
+|  [Deployments][Execute][Lifecycle]                                   |
+|  [Catalog (Puppet)][Hiera lookup (Puppet)][Variable browser (Ans)]   |   <- supplementary tabs
++----------------------------------------------------------------------+
+|                                                                      |
+|   [tab content loads here, independently]                            |
+|                                                                      |
++----------------------------------------------------------------------+
 ```
 
-Tabs shown are derived from integration capabilities active on this node (`UI-301`, `UI-303`). Each tab is a LiveComponent loaded on demand (`handle_params` reads `:tab`, swaps the active component).
+#### Tab ordering (UI-309)
 
-Deep linking to tabs works via URL patterns like `/inventory/node/<id>/configuration` (`UI-306`).
+`UI-309` mandates a canonical ordering. Generic capability tabs come first in this fixed order, then supplementary `node_tab` slots in plugin load order:
+
+| # | Tab | Source | Mounted when |
+|---|-----|--------|--------------|
+| 1 | Facts | Generic (Facts capability) | Any Facts-capable integration is linked to this node |
+| 2 | Configuration | Generic (Configuration capability) | Any Configuration-capable integration is linked |
+| 3 | Events / Journal | Generic (Events capability + Vigil-originated entries) | Always — Vigil-originated entries (executions, manual notes) ensure this tab is never empty |
+| 4 | Run History | Generic (Vigil-originated executions for this node) | Always |
+| 5 | Deployments | Generic (Deployment capability) | Any Deployment-capable integration is linked |
+| 6 | Execute | Generic (Remote Execution capability) | Any execution integration is linked *and* the user has any execute permission for this node |
+| 7 | Lifecycle | Generic (Provisioning capability) | Any Provisioning-capable integration is linked |
+| 8…N | Supplementary `node_tab` slots | Per [§3.10](03-plugin-framework.md#310-supplementary-capabilities-and-ui-extension-slots) | Plugin is linked to this node *and* user has the slot's RBAC permission. Listed in plugin load order. |
+
+Each supplementary tab label combines the capability's `display_name` with its contributing integration name — e.g., `Catalog (puppet-prod)` rather than just `Catalog` — to distinguish capabilities of the same name from different integrations (`UI-309` final sentence). If a plugin contributes multiple supplementary capabilities of the same slot type, each appears as its own tab.
+
+The tab list is built once in `mount/3` from the registry; ordering is enforced by sorting generic tabs against the canonical table and appending supplementary tabs in `SlotRegistry.for_slot(:node_tab, ...)` return order:
+
+```elixir
+defp build_tabs(node, principal) do
+  generic = canonical_generic_tabs(node, principal)         # ordered per UI-309 table above
+  supplementary = Vigil.Plugin.SlotRegistry.for_slot(:node_tab,
+                                                       %{node_id: node.id, principal: principal})
+                  |> Enum.map(&supplementary_tab/1)
+  generic ++ supplementary
+end
+```
+
+Each tab is a LiveComponent loaded on demand (`handle_params` reads `:tab`, swaps the active component). Deep linking to tabs works via URL patterns like `/inventory/node/<id>/configuration` or `/inventory/node/<id>/puppet:catalog_view` (`UI-306`); supplementary tabs use their namespaced capability ID in the URL.
+
+#### Node action bar (UI-310)
+
+The action bar is rendered *independently of the Execute tab* (`UI-310`). A node from an inventory-only integration (Proxmox node with a `console` action; AWS node with a tag-edit action) presents `node_action` buttons even when no execute integration is linked and the Execute tab is therefore absent.
+
+The action bar's contents are:
+
+| Action | Source | Visible when |
+|--------|--------|--------------|
+| Execute | Generic (any execution integration) | At least one execute integration is linked *and* user has any execute permission |
+| Decommission | Built-in (DM-1106) | User has admin role and node is `active` or `unreported` |
+| Supplementary `node_action` entries | Per [§3.10](03-plugin-framework.md#310-supplementary-capabilities-and-ui-extension-slots) | Plugin linked to this node *and* user has the slot's RBAC permission |
+
+`UI-310` explicitly: a Proxmox-only node with a `proxmox:console` `node_action` declaration is a valid and complete state — the action bar shows the Console button with no Execute tab present. `node_action` mounting goes through `SlotRegistry.for_slot(:node_action, ...)` (see [§9.6.6.3](#96633-node_action-slots-in-the-action-bar)), which has no dependency on execute-capability presence.
 
 ### 9.6.3 GlobalTimelineLive
 
@@ -327,44 +370,289 @@ Filter by target: [dropdown with multi-select]
 
 ### 9.6.5 HealthDashboardLive
 
-Shows every enabled integration's card:
+Per `UI-701` and `UI-703`, each enabled integration renders as a card with a four-state headline indicator (`healthy / degraded / unhealthy / flapping` per `HEALTH-104/105`), an expandable detail panel, and a flap indicator when flapping is active.
+
+Collapsed (default) state:
 
 ```
-+-------------------------------------------+
-|  Puppet (puppet-prod)          [healthy]  |
-|  ---------------------------------        |
-|  Inventory:     healthy  (last: 10s ago) |
-|  Facts:         healthy                  |
-|  Configuration: healthy                  |
-|  Events:        degraded — "PuppetDB slow"|
-|  Reports:       healthy                  |
-|                                           |
-|  [Force health check] [Flush caches]      |
-|  [Reload config]      [Disable]           |
-+-------------------------------------------+
++--------------------------------------------------------+
+|  Puppet  (puppet-prod) — puppet plugin                 |
+|  ── flapping ── 4 transitions in last 30 min ──  [▾]   |
++--------------------------------------------------------+
 ```
 
-Subscribed to `integration_health:all` for live updates (`HEALTH-101`, `HEALTH-102`). History graphs use the stored probe history (`HEALTH-104`).
+The headline colour and chip text track the aggregate status from the per-integration `Health` GenServer (see design/05 §5.6.1). When `flapping?` is true, the card *also* shows the transition count from the rolling window — this is the `UI-703` requirement: flapping is visually distinct from unhealthy and the count of state changes is shown explicitly, not just a boolean flag.
+
+Expanded state (`UI-701(c)`):
+
+```
++----------------------------------------------------------------+
+|  Puppet  (puppet-prod) — puppet plugin                         |
+|  ── flapping ── 4 transitions in last 30 min ──   [▴]          |
+|  ──────────────────────────────────────────────────────────    |
+|  Capability       Status     Last success     Last failure    |
+|  ────────────────────────────────────────────────────────     |
+|  Inventory        healthy    10s ago          —                |
+|  Facts            healthy    10s ago          —                |
+|  Configuration    healthy    35s ago          —                |
+|  Events           degraded   2m ago           1m ago: "PDB slow"|
+|  Reports          healthy    1m ago           —                |
+|                                                                |
+|  [ Force health check ] [ Flush caches ]                       |
+|  [ Reload config ]      [ Disable ]                            |
++----------------------------------------------------------------+
+```
+
+Each capability row shows the last-success timestamp, the last-failure timestamp, and the last diagnostic message — all four sub-points of `UI-701(c)` in one row. The action footer satisfies `HEALTH-103` / `UI-702`.
+
+Headline rendering logic in HEEx:
+
+```heex
+<.card>
+  <:header>
+    <span class="integration-name"><%= @integration.name %></span>
+    <span class="plugin-id">(<%= @integration.plugin_id %>)</span>
+    <.health_chip status={@health.current} />
+    <%= if @health.current == :flapping do %>
+      <span class="flap-indicator" data-testid="flap-count">
+        <%= @health.flap_count %> transitions in last
+        <%= format_window(@health.window_ms) %>
+      </span>
+    <% end %>
+  </:header>
+
+  <:body :if={@expanded?}>
+    <.capability_table capabilities={@health.capabilities} />
+    <.action_footer integration={@integration} />
+  </:body>
+</.card>
+```
+
+The `<.health_chip>` component maps statuses to colours and labels:
+
+| Status | Chip colour | Label |
+|--------|-------------|-------|
+| `:healthy` | green | "healthy" |
+| `:degraded` | amber | "degraded" |
+| `:unhealthy` | red | "unhealthy" |
+| `:flapping` | red-with-pulse | "flapping" |
+
+Flapping uses a distinct pulse animation in addition to colour so that colour-blind users get a redundant visual cue (`NFR-1401` accessibility).
+
+The LiveView subscribes to `integration_health:all` on mount; every published health payload from a per-integration `Health` GenServer carries `{current, capabilities, flap_count}` (design/05 §5.6.1) so the card repaints without any further query. The expanded/collapsed toggle is local LiveView state, not URL-routed, since it is per-viewer ephemeral preference.
+
+## 9.6.6 Mounting supplementary capability slots
+
+PRD §6.7 introduces three runtime UI extension slots — `node_tab`, `global_page`, `node_action`. The plugin framework's `Vigil.Plugin.SlotRegistry` (design/03 §3.10.3) answers "what plugins want to render here for this {principal, node}?". The LiveView layer is responsible for routing, mounting, and isolating those plugin-provided LiveComponents.
+
+### 9.6.6.1 Dynamic routing for `global_page`
+
+Sidebar navigation entries for `global_page` capabilities are not enumerable in the router at compile time — they depend on which plugins are loaded and which integrations are configured. The router uses a catch-all live route that dispatches to a single LiveView, which resolves the slot from the URL:
+
+```elixir
+# router.ex
+live "/integration/:integration_id/page/:slot_id", IntegrationPageLive, :show
+```
+
+```elixir
+defmodule VigilWeb.IntegrationPageLive do
+  use VigilWeb, :live_view
+
+  def mount(%{"integration_id" => int_id, "slot_id" => slot_id}, _session, socket) do
+    principal = socket.assigns.current_user
+
+    case Vigil.Plugin.SlotRegistry.lookup(:global_page, int_id, slot_id, principal) do
+      {:ok, %SupplementaryCapability{} = cap, :available} ->
+        {:ok, socket
+              |> assign(:capability, cap)
+              |> assign(:state, :available)}
+
+      {:ok, cap, :unavailable} ->
+        # Integration disabled or unhealthy — PLUG-904 unavailable state
+        {:ok, socket |> assign(:capability, cap) |> assign(:state, :unavailable)}
+
+      :forbidden ->
+        # PLUG-806: hide entirely, not greyed out — 404 rather than render disabled
+        {:ok, push_navigate(socket, to: ~p"/")}
+    end
+  end
+
+  def render(%{state: :available, capability: cap} = assigns) do
+    ~H"""
+    <.live_component
+      module={@capability.ui_module}
+      id={"slot-#{@capability.id}"}
+      capability={@capability}
+      principal={@current_user}
+    />
+    """
+  end
+
+  def render(%{state: :unavailable, capability: cap} = assigns) do
+    ~H"""
+    <.unavailable_integration_banner capability={@capability} />
+    """
+  end
+end
+```
+
+The sidebar component renders `global_page` entries by querying the registry directly, so the navigation list updates whenever an admin enables/disables an integration:
+
+```heex
+<aside id="sidebar">
+  <%= for {integration, pages} <- Vigil.Plugin.SlotRegistry.sidebar(@current_user) do %>
+    <.sidebar_section integration={integration}>
+      <%= for page <- pages do %>
+        <.sidebar_link
+          navigate={~p"/integration/#{integration.id}/page/#{page.id}"}
+          label={page.display_name}
+          disabled?={page.unavailable?} />
+      <% end %>
+    </.sidebar_section>
+  <% end %>
+</aside>
+```
+
+If an integration declares no `global_page` capabilities, no sidebar section is emitted (`PLUG-902`).
+
+### 9.6.6.2 Per-node `node_tab` slots
+
+`NodeDetailLive` queries the registry on mount to discover which plugin-provided tabs apply to the viewed node. The query passes the node's `node_sources` so the registry filters to plugins actually linked to that node (`PLUG-805`):
+
+```elixir
+def mount(%{"id" => node_id} = params, _session, socket) do
+  node          = Vigil.Core.Nodes.get!(socket.assigns.scope, node_id)
+  generic_tabs  = generic_tabs_for(node)                       # Overview, Facts, etc.
+  plugin_tabs   = Vigil.Plugin.SlotRegistry.for_slot(:node_tab,
+                                                       %{node_id: node.id,
+                                                         principal: socket.assigns.current_user})
+  active_tab    = params["tab"] || "overview"
+
+  {:ok, socket
+        |> assign(:node, node)
+        |> assign(:tabs, generic_tabs ++ plugin_tabs)
+        |> assign(:active_tab, active_tab)}
+end
+```
+
+The tab rendering layer dispatches on the active tab's origin:
+
+```heex
+<%= case @active_tab_descriptor do %>
+  <% %{kind: :generic, component: c} -> %>
+    <.live_component module={c} id={"tab-#{@active_tab}"} node={@node} />
+
+  <% %{kind: :supplementary, capability: cap} -> %>
+    <.live_component
+      module={cap.ui_module}
+      id={"tab-#{cap.id}"}
+      capability={cap}
+      node={@node}
+      principal={@current_user}
+    />
+<% end %>
+```
+
+Per `PLUG-809`, a plugin tab's data-call failure is isolated to its LiveComponent — the surrounding `NodeDetailLive` and other tabs render normally.
+
+### 9.6.6.3 `node_action` slots in the action bar
+
+The node action bar at the top of `NodeDetailLive` mounts `node_action` capabilities the same way:
+
+```heex
+<div class="action-bar">
+  <.execute_button :if={can_execute?(@current_user, @node)} />
+  <.lifecycle_button :if={can_decommission?(@current_user, @node)} />
+  <%= for action <- Vigil.Plugin.SlotRegistry.for_slot(:node_action,
+                                                        %{node_id: @node.id,
+                                                          principal: @current_user}) do %>
+    <.plugin_action_button
+      capability={action}
+      node={@node}
+      phx-click="invoke_supplementary"
+      phx-value-id={action.id} />
+  <% end %>
+</div>
+```
+
+Clicking a plugin action sends a `phx-click` event that the LiveView dispatches to `Vigil.Plugin.Dispatcher.supplementary_call/4`. The result is rendered in a dedicated panel — the registry-declared `ui_module` is reused for the output view.
+
+### 9.6.6.4 RBAC hides slots entirely (PLUG-806)
+
+The `for_slot/2` registry call filters by `Vigil.Core.RBAC.permitted?(principal, capability.rbac_permission)`. Slots the user is not permitted to see are never returned to the LiveView — they are hidden, not greyed out. This is enforced at the registry level so individual LiveComponents do not have to repeat the check, and there is no rendering path that produces a disabled-looking element for an unpermitted capability.
+
+For `global_page` slots, attempting to navigate to a forbidden URL hits the `:forbidden` branch in `IntegrationPageLive.mount/3` above and redirects, rather than rendering a "permission denied" placeholder.
 
 ## 9.7 Component patterns for source attribution
 
-`UI-1301..1303` require source attribution on every screen. The pattern:
+`UI-1301..1303` require source attribution on every screen.
 
 - **Row-level (lists):** `<.source_badge>` next to each row, multiple for multi-source nodes.
 - **Header-level (details):** a pills row at the top of the detail page.
-- **Field-level (tables of facts):** `<:col>` with a `from` annotation; on hover, per-source values surface via `<.tooltip>`.
+- **Field-level (facts):** see [§9.7.1](#971-source-badged-facts-table-plug-503--ui-308) — facts are *not* drill-in tooltips; they are rendered as a unified table where every fact carries a visible source badge.
 
-```heex
-<td class="fact-value" phx-hover-sources>
-  Ubuntu 22.04
-  <.tooltip>
-    Puppet: Ubuntu 22.04
-    Ansible: Ubuntu 22.04.3 LTS
-  </.tooltip>
-</td>
+### 9.7.1 Source-badged facts table (PLUG-503 / UI-308)
+
+`PLUG-503` (revised) and `UI-308` together replace the earlier "reconciled value, drill-in on hover" pattern with a flat, source-badged table where conflicts are visible without any interaction. The user no longer has to hover a cell to discover that Puppet and Ansible disagree — the table shows both rows, each with its source badge.
+
+Row construction (server-side, in the `Vigil.Core.Facts` context):
+
+```elixir
+defmodule Vigil.Core.Facts.Row do
+  @enforce_keys [:key, :value, :sources]
+  defstruct key: nil,
+            value: nil,                # the actual fact value (any term)
+            sources: []                # [%{plugin_id, integration_id, integration_name, gathered_at}]
+end
+
+def unified_rows(scope, node_id) do
+  scope
+  |> aggregate_per_source(node_id)         # returns [{source, fact_key, value, gathered_at}]
+  |> Enum.group_by(fn {_src, k, v, _at} -> {k, v} end)   # collapse by (key + value)
+  |> Enum.map(fn {{key, value}, group} ->
+    %Row{key: key, value: value, sources: Enum.map(group, &to_source/1)}
+  end)
+  |> Enum.sort_by(& &1.key)
+end
 ```
 
-All `source_badge` clicks open a drill-in drawer with full per-source details.
+The grouping key is `{fact_key, value}`, not `fact_key` alone — that is what produces the "one row per distinct value" semantics that `UI-308` requires. Two integrations reporting `os.distro = "Ubuntu 22.04"` collapse to one row with two badges; one reporting `"Ubuntu 22.04"` and the other `"Ubuntu 22.04.3 LTS"` produces two rows.
+
+Rendering:
+
+```heex
+<.table id="facts-table" rows={@filtered_rows}>
+  <:col :let={row} label="Key"><.fact_key path={row.key} /></:col>
+  <:col :let={row} label="Value"><.fact_value value={row.value} /></:col>
+  <:col :let={row} label="Source">
+    <%= for src <- row.sources do %>
+      <.source_badge integration_id={src.integration_id}
+                     integration_name={src.integration_name}
+                     plugin_id={src.plugin_id}
+                     gathered_at={src.gathered_at} />
+    <% end %>
+  </:col>
+</.table>
+```
+
+Per-source filter (`UI-308`, `PLUG-503` final sentence):
+
+```heex
+<.filter_bar>
+  <.select
+    name="source"
+    options={[{"All sources", nil} | Enum.map(@integrations, &{&1.name, &1.id})]}
+    value={@filter.source_id}
+    phx-change="filter_source" />
+</.filter_bar>
+```
+
+`handle_event("filter_source", ...)` re-derives `@filtered_rows` by retaining only rows whose `sources` list contains the selected integration. The filter is purely a presentation operation over the already-loaded universe — no re-fetch.
+
+Conflict signalling: when the same fact key appears in two or more rows with differing values, the LiveView annotates each of those rows with a `conflict?` flag (computed once during row construction) so the rendered cell can carry a subtle visual marker without the user having to drill in. This is not required by `UI-308`, which already requires conflicts to be visible as separate rows, but it surfaces the disagreement without forcing the reader to scan keys.
+
+> **Decision: Source attribution at the row level, not behind a tooltip.**
+> The earlier design routed per-source values through a hover tooltip. That hides conflict from any user not actively probing the cell — exactly the case the PRD grilling closed off. Putting source badges on every row (and producing one row per distinct value) makes the data shape and any disagreement self-evident at a glance, which is the operational property `PLUG-503` is now optimising for.
 
 ## 9.8 Confirmation flows
 

@@ -5,18 +5,19 @@ This section specifies the OTP supervision tree: how processes are organized, wh
 ## 2.1 Umbrella layout
 
 ```
-vigil/                                # umbrella root
+vigil/                                # umbrella root (CE, AGPL v3)
 ├── apps/
 │   ├── vigil_core/                   # domain logic, Ecto, PubSub topics
 │   ├── vigil_plugin/                 # plugin contract, dispatcher, conformance
 │   ├── vigil_web/                    # Phoenix, LiveView, API, MCP HTTP
+│   ├── vigil_auth_oidc/              # CE OIDC provider (single-IdP, literal
+│   │                                 #   group-to-role mapping). Implements
+│   │                                 #   the Vigil.Auth.Provider behaviour.
 │   ├── vigil_integrations_puppet/
 │   ├── vigil_integrations_bolt/
 │   ├── vigil_integrations_ansible/
 │   ├── vigil_integrations_ssh/
 │   ├── vigil_integrations_proxmox/
-│   ├── vigil_integrations_aws/
-│   └── vigil_integrations_azure/
 ├── config/                           # shared config
 │   ├── config.exs
 │   ├── dev.exs
@@ -30,6 +31,10 @@ vigil/                                # umbrella root
 
 Each umbrella child has its own `mix.exs`, its own `application/0`, and its own dependencies. The root `mix.exs` declares no runtime dependencies beyond the umbrella children.
 
+AWS and Azure integration apps are Phase 2a work. They follow the same child-app pattern when introduced, but they are not present in the Phase 1 CE umbrella.
+
+Enterprise Edition apps (`vigil_auth_saml`, `vigil_auth_ldap`, `vigil_auth_enterprise`, `vigil_enterprise_*`) live in a separate private umbrella and are **not** present in this repository. They register into CE's extension points (`Vigil.Auth.Provider`, `Vigil.Audit.Exporter`, `Vigil.Cluster.Backend`, etc.) at runtime when the `vigil_enterprise` OTP app is loaded alongside CE. See [`docs/specs/editions.md`](../editions.md) §4 for the full EE app inventory and license-validation approach.
+
 ## 2.2 Top-level supervision tree
 
 ```
@@ -41,7 +46,11 @@ Vigil.Application
 ├── Finch                                    # HTTP connection pools
 ├── Vigil.Telemetry.Supervisor               # telemetry reporter, metrics
 ├── Vigil.Core.Supervisor                    # domain services
-│   ├── Vigil.Core.Inventory.Linker           # identity linking worker pool
+│   ├── Vigil.Core.Inventory.Linker           # owns multi-attribute inverted index
+│   │                                         #   (ETS tables linker_certname / fqdn /
+│   │                                         #   hostname / ip → node_id) per ADR-0003;
+│   │                                         #   subscribes to inventory:cache_refreshed;
+│   │                                         #   rebuilds index from DB on init.
 │   ├── Vigil.Core.Execution.Supervisor       # execution streams (DynamicSupervisor)
 │   ├── Vigil.Core.Cache                      # ETS cache server
 │   ├── Vigil.Core.Cache.Janitor              # TTL sweeper
@@ -54,6 +63,14 @@ Vigil.Application
 │   ├── ... etc
 └── VigilWeb.Endpoint                        # Phoenix endpoint (last to start)
 ```
+
+> **Realization — Option B (distributed `application/0`).** The tree above is a *logical* view of which children supervise which. The implementation distributes the children across each umbrella child's own `application/0` callback, and BEAM's `application_controller` enforces startup order via the `:applications` dependency graph in each child's `mix.exs`:
+>
+> - `vigil_core.Application` supervises: `Vigil.Repo`, `Oban`, `Phoenix.PubSub (Vigil.PubSub)`, `Finch`, `Vigil.Telemetry.Supervisor`, `Vigil.Core.Supervisor`.
+> - `vigil_plugin.Application` supervises: `Vigil.Plugin.Registry`, `Vigil.Integrations.Supervisor`.
+> - `vigil_web.Application` supervises: `VigilWeb.Endpoint`.
+>
+> Order is enforced by declaring `vigil_core` as a runtime dep of `vigil_plugin` and `vigil_web`, and `vigil_plugin` as a runtime dep of `vigil_web`. There is no literal `Vigil.Application` module — the name in the diagram refers to the union of the three top supervisors. This keeps each app's `mix.exs` dependencies aligned with what that app actually uses (`vigil_web` owns `:phoenix`, `vigil_core` owns `:ecto_sql` / `:oban`) and lets EE apps slot in as additional siblings without mutating a centralized children list.
 
 ### 2.2.1 Startup order
 
@@ -73,8 +90,8 @@ Order matters. `VigilWeb.Endpoint` starts *last* so the application can start ta
 
 | Supervisor | Strategy | Rationale |
 |------------|---------|-----------|
-| `Vigil.Application` (top) | `:one_for_one` | Unrelated failures don't cascade |
-| `Vigil.Core.Supervisor` | `:rest_for_one` | Downstream services depend on upstream (Cache before Journal) |
+| `vigil_core` / `vigil_plugin` / `vigil_web` top supervisors | `:one_for_one` | Default for `use Application`. Unrelated failures within an app don't cascade; cross-app failures are bounded by BEAM's `:application_controller`. |
+| `Vigil.Core.Supervisor` (inner, under `vigil_core` top) | `:rest_for_one` | Downstream services depend on upstream (Cache before Journal) |
 | `Vigil.Integrations.Supervisor` | `:one_for_one` | Per-integration isolation (`PLUG-401`) |
 | `Vigil.Integrations.<Plugin>.Supervisor.<id>` | `:one_for_one` | Per-sub-system isolation within a plugin (Puppet's PuppetDB/Puppetserver/Hiera) |
 | `Vigil.Core.Execution.Supervisor` | `:one_for_one` via DynamicSupervisor | Execution streams are independent |
@@ -136,22 +153,22 @@ Long-running operations (executions, provisioning, streams) have their own proce
 ```
 Vigil.Core.Execution.Supervisor  (DynamicSupervisor)
 │
-├── Vigil.Core.Execution.Stream.<execution_id>
+├── Vigil.Core.Execution.Stream.<execution_group_id>
 │   # GenServer owning the subprocess / HTTP long-poll
 │   # buffers output, broadcasts chunks, persists transcript on end
 │
-├── Vigil.Core.Execution.Stream.<execution_id>
+├── Vigil.Core.Execution.Stream.<execution_group_id>
 ...
 ```
 
 A LiveView user opens the execution page. The LiveView's `mount/3`:
 
-1. Looks up or starts `Vigil.Core.Execution.Stream.<execution_id>` (via a registered name).
-2. `Phoenix.PubSub.subscribe(Vigil.PubSub, "execution_stream:<id>")`.
-3. Requests the current buffer contents to backfill already-produced output (`STR-103`).
+1. Looks up `Vigil.Core.Execution.Stream.<execution_group_id>` (via a registered name).
+2. Subscribes to one or more per-target `execution_stream:<execution_id>` topics.
+3. Requests replay from position `0` or from the last acknowledged position (`STR-103`, `STR-202`).
 4. Receives `{:execution_chunk, chunk}` messages thereafter.
 
-If the LiveView disconnects, the `Stream` GenServer continues unaffected (`STR-203`). A re-connecting LiveView re-subscribes and backfills from the buffer. On execution completion, the GenServer writes the full transcript to Postgres and terminates gracefully after a grace period (allowing late reconnections to still get `{:execution_ended, exit_status}`).
+If the LiveView disconnects, the `Stream` GenServer continues unaffected (`STR-203`). A re-connecting LiveView re-subscribes and backfills from the live spool. On execution completion, the GenServer writes the full transcript to Postgres and terminates gracefully after a grace period (allowing late reconnections to still get `{:execution_ended, exit_status}`).
 
 ## 2.6 Phoenix.PubSub topics
 
@@ -162,6 +179,8 @@ PubSub is the primary cross-process eventing channel. Topics and their payloads 
 | `integration_health:<id>` | Plugin health worker | Status dashboard, admin LiveViews | `{:health, status, capabilities, diagnostic}` |
 | `integration_health:all` | Plugin health worker | Metrics collector | Rollup events |
 | `inventory_changed:<integration_id>` | Plugin inventory refresh | Inventory LiveView, linker | `{:inventory_changed, :full | :partial, changed_ids}` |
+| `inventory:cache_refreshed` | Integration cache refresh completion | `Vigil.Core.Inventory.Linker` | `{:integration_cache_refreshed, integration_id, observations}` — drives incremental linker index update + unreported detection per ADR-0003 |
+| `node:lifecycle:<node_id>` | `Vigil.Core.Nodes.transition_lifecycle/2` | Inventory LiveView, NodeDetailLive | `{:lifecycle, new_state, reason}` for `:active | :unreported | :decommissioned` transitions per DM-1102 |
 | `node:<node_id>` | Execution stream | Node detail LiveView | `{:fact_update, diff}` |
 | `execution_stream:<id>` | Execution stream GenServer | Execution LiveView, audit | `{:chunk, stream, text}`, `{:ended, status}` |
 | `provisioning:<op_id>` | Provisioning tracker | Provisioning LiveView | `{:state, new_state}`, `{:ended, result}` |
