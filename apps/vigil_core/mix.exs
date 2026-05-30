@@ -10,11 +10,15 @@ defmodule Vigil.Core.MixProject do
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
       elixir: "~> 1.19",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   defp aliases do
     [
@@ -40,7 +44,8 @@ defmodule Vigil.Core.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:finch, "~> 0.19"},
       {:telemetry_metrics, "~> 1.0"},
-      {:telemetry_poller, "~> 1.0"}
+      {:telemetry_poller, "~> 1.0"},
+      {:jason, "~> 1.2"}
     ]
   end
 end

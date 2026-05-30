@@ -28,7 +28,29 @@ defmodule Vigil.Plugin.NoOp do
   def capabilities, do: [:inventory, :execution]
 
   @impl Vigil.Plugin
-  def config_schema, do: %Vigil.Plugin.Schema{fields: []}
+  def config_schema do
+    alias Vigil.Plugin.Schema.Field
+
+    %Vigil.Plugin.Schema{
+      fields: [
+        %Field{
+          name: "check_interval_ms",
+          type: :integer,
+          required: false,
+          default: 30_000,
+          description: "Health-check interval in milliseconds.",
+          reload: :hot
+        },
+        %Field{
+          name: "endpoint_url",
+          type: :url,
+          required: false,
+          description: "Simulated endpoint URL (triggers restart on change).",
+          reload: :restart
+        }
+      ]
+    }
+  end
 
   @impl Vigil.Plugin
   def defaults do
@@ -44,10 +66,17 @@ defmodule Vigil.Plugin.NoOp do
 
   @impl Vigil.Plugin
   def child_spec({integration_id, config}) do
+    children = [
+      {Vigil.Plugin.NoOp.Server, {integration_id, config}},
+      {Vigil.Plugin.NoOp.ConfigServer, {integration_id, config}}
+    ]
+
     %{
-      id: {:noop, integration_id},
-      start: {Vigil.Plugin.NoOp.Server, :start_link, [{integration_id, config}]},
-      type: :worker,
+      id: {:noop_supervisor, integration_id},
+      start:
+        {Supervisor, :start_link,
+         [children, [strategy: :one_for_one, max_restarts: 10, max_seconds: 60]]},
+      type: :supervisor,
       restart: :permanent
     }
   end
