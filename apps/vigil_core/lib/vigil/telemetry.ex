@@ -1,4 +1,5 @@
 defmodule Vigil.Telemetry.Supervisor do
+  @moduledoc false
   use Supervisor
   import Telemetry.Metrics
 

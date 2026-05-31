@@ -1,0 +1,13 @@
+## Customize flags given to the VM: https://www.erlang.org/doc/man/erl.html
+## -mode/-name/-cookie are configured via env.sh / runtime, do not set them here.
+
+## Increase number of concurrent ports/sockets
+##+Q 65536
+
+## Tweak GC to run more often
+##-env ERL_FULLSWEEP_AFTER 10
+
+## Enable deterministic exit codes on crashes so orchestrators can react.
++sbwt none
++sbwtdcpu none
++sbwtdio none

@@ -36,6 +36,10 @@ defmodule VigilWeb.Endpoint do
   end
 
   plug Plug.RequestId
+
+  # Liveness probe — answered before session/parsers, no DB access.
+  plug VigilWeb.Plugs.Health
+
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
   plug Plug.Parsers,

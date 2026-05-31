@@ -1,0 +1,27 @@
+# Build artefacts and deps — rebuilt inside the image.
+_build/
+deps/
+*.ez
+
+# Node/asset caches (assets are built in-image).
+apps/*/assets/node_modules/
+
+# Local-only and VCS state.
+.git/
+.gitignore
+.elixir_ls/
+priv/plts/
+erl_crash.dump
+
+# Editor / tooling / agent metadata.
+.kiro/
+.kirograph/
+.claude/
+.mcp.json
+
+# Docs and CI are not needed in the image.
+docs/
+.github/
+
+# Test files are excluded from the prod release build.
+apps/*/test/
