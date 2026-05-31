@@ -18,6 +18,11 @@ defmodule VigilWeb.Router do
     pipe_through :browser
 
     live "/", DashboardLive
+    live "/health", Live.HealthLive
+    live "/inventory", InventoryLive
+    live "/inventory/node/:id", NodeDetailLive
+    live "/inventory/node/:id/:tab", NodeDetailLive
+    live "/settings/integrations", Live.Settings.IntegrationsLive
   end
 
   # Other scopes may use custom stacks.

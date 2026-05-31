@@ -15,10 +15,18 @@ defmodule Vigil.Plugin.Conformance do
   the contract surfaces the missing conformance contract immediately.
   """
 
-  alias Vigil.Plugin.Conformance.{Check, ExecutionContract, InventoryContract, LifecycleContract, Report}
+  alias Vigil.Plugin.Conformance.{
+    Check,
+    ExecutionContract,
+    FactsContract,
+    InventoryContract,
+    LifecycleContract,
+    Report
+  }
 
   @capability_contracts %{
     inventory: InventoryContract,
+    facts: FactsContract,
     execution: ExecutionContract
   }
 

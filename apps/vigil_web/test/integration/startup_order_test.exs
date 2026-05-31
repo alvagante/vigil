@@ -18,4 +18,9 @@ defmodule Vigil.StartupOrderTest do
     assert :vigil_core in deps
     assert :vigil_plugin in deps
   end
+
+  test "vigil_plugin declares :vigil_core as a runtime dep (Manager needs Repo + PubSub at startup)" do
+    {:ok, deps} = :application.get_key(:vigil_plugin, :applications)
+    assert :vigil_core in deps
+  end
 end

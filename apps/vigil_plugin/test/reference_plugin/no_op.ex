@@ -9,6 +9,7 @@ defmodule Vigil.Plugin.NoOp do
   @behaviour Vigil.Plugin
   @behaviour Vigil.Plugin.Health
   @behaviour Vigil.Plugin.Inventory
+  @behaviour Vigil.Plugin.Facts
   @behaviour Vigil.Plugin.Execution.Runner
 
   alias Vigil.Plugin.{Result, Source}
@@ -28,7 +29,29 @@ defmodule Vigil.Plugin.NoOp do
   def capabilities, do: [:inventory, :execution]
 
   @impl Vigil.Plugin
-  def config_schema, do: %Vigil.Plugin.Schema{fields: []}
+  def config_schema do
+    alias Vigil.Plugin.Schema.Field
+
+    %Vigil.Plugin.Schema{
+      fields: [
+        %Field{
+          name: "check_interval_ms",
+          type: :integer,
+          required: false,
+          default: 30_000,
+          description: "Health-check interval in milliseconds.",
+          reload: :hot
+        },
+        %Field{
+          name: "endpoint_url",
+          type: :url,
+          required: false,
+          description: "Simulated endpoint URL (triggers restart on change).",
+          reload: :restart
+        }
+      ]
+    }
+  end
 
   @impl Vigil.Plugin
   def defaults do
@@ -44,10 +67,17 @@ defmodule Vigil.Plugin.NoOp do
 
   @impl Vigil.Plugin
   def child_spec({integration_id, config}) do
+    children = [
+      {Vigil.Plugin.NoOp.Server, {integration_id, config}},
+      {Vigil.Plugin.NoOp.ConfigServer, {integration_id, config}}
+    ]
+
     %{
-      id: {:noop, integration_id},
-      start: {Vigil.Plugin.NoOp.Server, :start_link, [{integration_id, config}]},
-      type: :worker,
+      id: {:noop_supervisor, integration_id},
+      start:
+        {Supervisor, :start_link,
+         [children, [strategy: :one_for_one, max_restarts: 10, max_seconds: 60]]},
+      type: :supervisor,
       restart: :permanent
     }
   end
@@ -66,6 +96,18 @@ defmodule Vigil.Plugin.NoOp do
     {:ok,
      %Result{
        data: [],
+       source: %Source{plugin_id: @plugin_id, integration_id: integration_id},
+       fetched_at: DateTime.utc_now()
+     }}
+  end
+
+  # Implements the Facts behaviour (so it can stand in as a dispatch target for
+  # the FactsContract) without declaring the `:facts` capability itself.
+  @impl Vigil.Plugin.Facts
+  def get_facts(integration_id, _args) do
+    {:ok,
+     %Result{
+       data: %{},
        source: %Source{plugin_id: @plugin_id, integration_id: integration_id},
        fetched_at: DateTime.utc_now()
      }}

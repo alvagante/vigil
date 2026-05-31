@@ -16,11 +16,20 @@ defmodule Vigil.Plugin.ConformanceTest do
     assert Enum.any?(report.passed, &(&1.name == "execution:start/4:shape"))
   end
 
+  test "the :facts capability is exercised by the FactsContract (ROAD-105)" do
+    report = Conformance.run(Vigil.Plugin.ConformanceFake, %{})
+
+    assert Conformance.Report.ok?(report),
+           "expected no failures, got:\n" <> Enum.map_join(report.failed, "\n", & &1.message)
+
+    assert Enum.any?(report.passed, &(&1.name == "facts:get_facts/2:result_shape"))
+  end
+
   test "a declared capability with no conformance contract surfaces as a warning (ROAD-105)" do
     report = Conformance.run(Vigil.Plugin.ConformanceFake, %{})
 
     # Warnings do not fail conformance, but the gap must be visible — never a silent pass.
     assert Conformance.Report.ok?(report)
-    assert Enum.any?(report.warnings, &(&1.name == "capability:facts:no_contract"))
+    assert Enum.any?(report.warnings, &(&1.name == "capability:monitoring:no_contract"))
   end
 end
