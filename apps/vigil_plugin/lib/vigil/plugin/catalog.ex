@@ -46,7 +46,11 @@ defmodule Vigil.Plugin.Catalog do
   @impl GenServer
   def init(_opts) do
     catalog = discover_from_otp_apps()
-    Logger.debug("[Catalog] discovered #{map_size(catalog)} plugin type(s): #{inspect(Map.keys(catalog))}")
+
+    Logger.debug(
+      "[Catalog] discovered #{map_size(catalog)} plugin type(s): #{inspect(Map.keys(catalog))}"
+    )
+
     {:ok, catalog}
   end
 
@@ -73,9 +77,24 @@ defmodule Vigil.Plugin.Catalog do
     |> Enum.flat_map(fn {app, _desc, _vsn} ->
       case Application.get_env(app, :vigil_plugin) do
         nil -> []
-        mod -> [{mod.plugin_id(), mod}]
+        mod -> discovered_pair(app, mod)
       end
     end)
     |> Map.new()
+  end
+
+  # A plugin app declares its module via `env: [vigil_plugin: Mod]`. Guard
+  # against a module that isn't loadable or doesn't implement the contract so a
+  # single misconfigured plugin app can't take down platform boot.
+  defp discovered_pair(app, mod) do
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :plugin_id, 0) do
+      [{mod.plugin_id(), mod}]
+    else
+      Logger.warning(
+        "[Catalog] app #{inspect(app)} declares vigil_plugin #{inspect(mod)} but it is not a usable plugin module; skipping"
+      )
+
+      []
+    end
   end
 end

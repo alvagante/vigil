@@ -1,20 +1,23 @@
 defmodule Vigil.Plugin.ConformanceFake do
   @moduledoc """
   Test-support plugin that conforms to the full contract (by delegating to
-  `Vigil.Plugin.NoOp`) but declares an extra `:facts` capability for which no
-  conformance contract exists yet. Used to prove the suite flags uncontracted
-  capabilities as warnings rather than passing silently (ROAD-105).
+  `Vigil.Plugin.NoOp`). It implements the `:facts` capability so the suite's
+  `FactsContract` has a known-good target to run against, and additionally
+  declares a `:monitoring` capability for which no conformance contract exists
+  yet — proving the suite flags uncontracted capabilities as warnings rather
+  than passing silently (ROAD-105).
   """
 
   @behaviour Vigil.Plugin
   @behaviour Vigil.Plugin.Health
   @behaviour Vigil.Plugin.Inventory
+  @behaviour Vigil.Plugin.Facts
   @behaviour Vigil.Plugin.Execution.Runner
 
   alias Vigil.Plugin.NoOp
 
   @impl Vigil.Plugin
-  def capabilities, do: [:inventory, :execution, :facts]
+  def capabilities, do: [:inventory, :execution, :facts, :monitoring]
 
   @impl Vigil.Plugin
   defdelegate plugin_id(), to: NoOp
@@ -36,6 +39,9 @@ defmodule Vigil.Plugin.ConformanceFake do
 
   @impl Vigil.Plugin.Inventory
   defdelegate list_nodes(integration_id, opts), to: NoOp
+
+  @impl Vigil.Plugin.Facts
+  defdelegate get_facts(integration_id, args), to: NoOp
 
   @impl Vigil.Plugin.Execution.Runner
   defdelegate start(integration_id, artifact, targets, opts), to: NoOp
