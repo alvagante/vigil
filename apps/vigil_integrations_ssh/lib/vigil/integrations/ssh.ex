@@ -23,11 +23,12 @@ defmodule Vigil.Integrations.SSH do
   @behaviour Vigil.Plugin.Health
   @behaviour Vigil.Plugin.Inventory
   @behaviour Vigil.Plugin.Facts
+  @behaviour Vigil.Plugin.Execution.Runner
 
   require Logger
 
   alias Vigil.Plugin.{Error, Node, Permission, Result, Schema, Source}
-  alias Vigil.Integrations.SSH.{ConfigParser, ConnectionPool, FactParser, Server, Transport}
+  alias Vigil.Integrations.SSH.{ConfigParser, ConnectionPool, FactParser, Runner, Server, Transport}
 
   @plugin_id "ssh"
   @default_config_file "~/.ssh/config"
@@ -57,7 +58,7 @@ defmodule Vigil.Integrations.SSH do
   def contract_version, do: Version.parse!("1.0.0")
 
   @impl Vigil.Plugin
-  def capabilities, do: [:inventory, :facts]
+  def capabilities, do: [:inventory, :facts, :execution]
 
   @impl Vigil.Plugin
   def config_schema do
@@ -212,6 +213,18 @@ defmodule Vigil.Integrations.SSH do
       {:error, :not_found} ->
         {:ok, :unhealthy}
     end
+  end
+
+  ## Vigil.Plugin.Execution.Runner
+
+  @impl Vigil.Plugin.Execution.Runner
+  def start(integration_id, artifact, targets, opts) do
+    Runner.start(integration_id, artifact, targets, opts)
+  end
+
+  @impl Vigil.Plugin.Execution.Runner
+  def abort(runner_ref) do
+    Runner.abort(runner_ref)
   end
 
   ## Connection-option resolution (used by the pool and health probing)

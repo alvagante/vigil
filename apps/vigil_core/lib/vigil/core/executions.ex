@@ -152,6 +152,14 @@ defmodule Vigil.Core.Executions do
     end
   end
 
+  @doc "Returns the execution group for a given `group_id`."
+  def get_group(group_id) do
+    case Repo.get(Group, group_id) do
+      nil -> {:error, :not_found}
+      group -> {:ok, group}
+    end
+  end
+
   @doc "Returns all execution groups, ordered by submission time descending."
   def history(filters \\ %{}) do
     import Ecto.Query

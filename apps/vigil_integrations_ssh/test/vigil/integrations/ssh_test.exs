@@ -140,6 +140,7 @@ defmodule Vigil.Integrations.SSHTest do
 
       assert Enum.any?(report.passed, &(&1.name == "inventory:list_nodes/2:result_shape"))
       assert Enum.any?(report.passed, &(&1.name == "facts:get_facts/2:result_shape"))
+      assert Enum.any?(report.passed, &(&1.name == "execution:start/4:shape"))
     end
   end
 end

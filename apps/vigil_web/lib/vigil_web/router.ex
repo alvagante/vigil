@@ -23,6 +23,9 @@ defmodule VigilWeb.Router do
     live "/inventory/node/:id", NodeDetailLive
     live "/inventory/node/:id/:tab", NodeDetailLive
     live "/settings/integrations", Live.Settings.IntegrationsLive
+    live "/executions", Live.ExecutionLive
+    live "/executions/new", Live.ExecutionSubmitLive
+    live "/executions/:group_id", Live.ExecutionLive
   end
 
   # Other scopes may use custom stacks.
