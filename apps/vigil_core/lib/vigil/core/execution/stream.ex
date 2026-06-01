@@ -17,10 +17,25 @@ defmodule Vigil.Core.Execution.Stream do
   alias Vigil.Core.Execution.Record
   alias Vigil.Repo
 
+  @transcript_cap_bytes 50 * 1024 * 1024
+  @truncation_marker "\n[TRANSCRIPT TRUNCATED: output exceeded the 50 MB inline cap]\n"
+
   ## Public API
 
   def start_link(args) do
     GenServer.start_link(__MODULE__, args)
+  end
+
+  @doc """
+  Caps `data` at `cap` bytes. When the cap is exceeded, the excess is replaced
+  with an explicit truncation marker so consumers know output was lost.
+  """
+  def cap_transcript(data, cap \\ @transcript_cap_bytes) when is_binary(data) do
+    if byte_size(data) > cap do
+      binary_part(data, 0, cap) <> @truncation_marker
+    else
+      data
+    end
   end
 
   ## GenServer callbacks
@@ -166,6 +181,7 @@ defmodule Vigil.Core.Execution.Stream do
         |> Map.get(exec_id, [])
         |> Enum.reverse()
         |> IO.iodata_to_binary()
+        |> cap_transcript()
 
       meta = Map.get(state.finished, exec_id, %{exit_status: nil, duration_ms: nil})
 
