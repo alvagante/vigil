@@ -29,12 +29,28 @@ defmodule VigilWeb.Router do
     live_session :authenticated,
       on_mount: [{VigilWeb.LiveAuth, :require_authenticated}] do
       live "/", DashboardLive
-      live "/health", Live.HealthLive
+    end
+
+    live_session :inventory_access,
+      on_mount: [{VigilWeb.LiveAuth, {:require_permission, "inventory:node:read"}}] do
       live "/inventory", InventoryLive
       live "/inventory/node/:id", NodeDetailLive
       live "/inventory/node/:id/:tab", NodeDetailLive
-      live "/executions", Live.ExecutionLive
+    end
+
+    live_session :health_access,
+      on_mount: [{VigilWeb.LiveAuth, {:require_permission, "integration:health:read"}}] do
+      live "/health", Live.HealthLive
+    end
+
+    live_session :execution_submit,
+      on_mount: [{VigilWeb.LiveAuth, {:require_permission, "execution:submit"}}] do
       live "/executions/new", Live.ExecutionSubmitLive
+    end
+
+    live_session :execution_read,
+      on_mount: [{VigilWeb.LiveAuth, {:require_permission, "execution:read"}}] do
+      live "/executions", Live.ExecutionLive
       live "/executions/:group_id", Live.ExecutionLive
     end
 

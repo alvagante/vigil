@@ -17,11 +17,19 @@ defmodule Vigil.Core.Seeds do
     %{name: "mcp-service", description: "Read-only MCP tools for AI service accounts.", built_in: true}
   ]
 
+  @built_in_permissions %{
+    "operator" => ["inventory:node:read", "integration:health:read", "execution:read", "execution:submit"],
+    "read-only" => ["inventory:node:read", "integration:health:read", "execution:read"],
+    "auditor" => ["integration:health:read", "audit:entry:read"],
+    "mcp-service" => ["inventory:node:read"]
+  }
+
   def seed do
     Repo.transaction(fn ->
       roles = upsert_roles()
       admin = upsert_break_glass_admin()
       grant_administrator_wildcard(roles["administrator"])
+      grant_built_in_role_permissions(roles)
       assign_admin_role(admin, roles["administrator"])
     end)
 
@@ -58,6 +66,24 @@ defmodule Vigil.Core.Seeds do
 
       existing ->
         existing
+    end
+  end
+
+  defp grant_built_in_role_permissions(roles) do
+    for {role_name, actions} <- @built_in_permissions,
+        role = Map.get(roles, role_name),
+        action <- actions do
+      already_granted =
+        Repo.exists?(
+          from rp in RolePermission,
+            where: rp.role_id == ^role.id and rp.action == ^action and is_nil(rp.integration_id)
+        )
+
+      unless already_granted do
+        %RolePermission{}
+        |> RolePermission.changeset(%{role_id: role.id, action: action})
+        |> Repo.insert!()
+      end
     end
   end
 

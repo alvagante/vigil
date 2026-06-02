@@ -66,5 +66,67 @@ defmodule Vigil.Core.SeedsTest do
       assert admin_count == 1
       assert role_count == 5
     end
+
+    test "operator role has read and execute permissions" do
+      Seeds.seed()
+      role = Repo.one!(from r in Role, where: r.name == "operator")
+      actions = Repo.all(from rp in RolePermission, where: rp.role_id == ^role.id, select: rp.action)
+
+      assert "inventory:node:read" in actions
+      assert "integration:health:read" in actions
+      assert "execution:read" in actions
+      assert "execution:submit" in actions
+    end
+
+    test "read-only role has read-only permissions and no submit" do
+      Seeds.seed()
+      role = Repo.one!(from r in Role, where: r.name == "read-only")
+      actions = Repo.all(from rp in RolePermission, where: rp.role_id == ^role.id, select: rp.action)
+
+      assert "inventory:node:read" in actions
+      assert "integration:health:read" in actions
+      assert "execution:read" in actions
+      refute "execution:submit" in actions
+    end
+
+    test "auditor role has health and audit permissions only" do
+      Seeds.seed()
+      role = Repo.one!(from r in Role, where: r.name == "auditor")
+      actions = Repo.all(from rp in RolePermission, where: rp.role_id == ^role.id, select: rp.action)
+
+      assert "integration:health:read" in actions
+      assert "audit:entry:read" in actions
+      refute "inventory:node:read" in actions
+      refute "execution:submit" in actions
+    end
+
+    test "mcp-service role has inventory read only" do
+      Seeds.seed()
+      role = Repo.one!(from r in Role, where: r.name == "mcp-service")
+      actions = Repo.all(from rp in RolePermission, where: rp.role_id == ^role.id, select: rp.action)
+
+      assert "inventory:node:read" in actions
+      refute "execution:submit" in actions
+    end
+
+    test "seeded read-only role passes RBAC.check for inventory:node:read" do
+      Seeds.seed()
+      read_only_role = Repo.one!(from r in Role, where: r.name == "read-only")
+
+      {:ok, user} = Accounts.register_user(%{username: "test_readonly_#{System.unique_integer()}", password: "test_password_123!"})
+      :ok = RBAC.assign_role(user, read_only_role)
+
+      assert :ok = RBAC.check(user, "inventory:node:read", %RBAC.Context{})
+      assert {:error, :denied} = RBAC.check(user, "execution:submit", %RBAC.Context{})
+    end
+
+    test "seeded built-in role permissions are idempotent" do
+      Seeds.seed()
+      Seeds.seed()
+
+      role = Repo.one!(from r in Role, where: r.name == "operator")
+      count = Repo.aggregate(from(rp in RolePermission, where: rp.role_id == ^role.id), :count)
+      assert count == 4
+    end
   end
 end
