@@ -12,6 +12,7 @@ defmodule Vigil.Core.RBAC.Role do
     field :built_in, :boolean, default: false
 
     has_many :role_permissions, Vigil.Core.RBAC.RolePermission
+    has_many :user_roles, Vigil.Core.RBAC.UserRole
 
     timestamps(type: :utc_datetime_usec)
   end

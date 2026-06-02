@@ -41,6 +41,7 @@ defmodule VigilWeb.Router do
     live_session :admin,
       on_mount: [{VigilWeb.LiveAuth, {:require_permission, "platform:admin"}}] do
       live "/settings/integrations", Live.Settings.IntegrationsLive
+      live "/settings/roles", Live.Settings.RolesLive
     end
   end
 
