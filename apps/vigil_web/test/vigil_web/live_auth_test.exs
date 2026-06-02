@@ -122,4 +122,76 @@ defmodule VigilWeb.LiveAuthTest do
       assert socket.redirected == {:redirect, %{status: 302, to: "/users/log_in"}}
     end
   end
+
+  # ── Cycle 10: router permission gates on operational routes ───────────────
+
+  describe "require_permission (router integration)" do
+    test "user with role:none is denied /inventory (redirected to /)", %{conn: conn} do
+      user = user_fixture(%{role: :none})
+      conn = log_in_user(conn, user)
+
+      assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/inventory")
+    end
+
+    test "user with role:none is denied /health (redirected to /)", %{conn: conn} do
+      user = user_fixture(%{role: :none})
+      conn = log_in_user(conn, user)
+
+      assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/health")
+    end
+
+    test "user with role:none is denied /executions (redirected to /)", %{conn: conn} do
+      user = user_fixture(%{role: :none})
+      conn = log_in_user(conn, user)
+
+      assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/executions")
+    end
+
+    test "user with role:none is denied /executions/new (redirected to /)", %{conn: conn} do
+      user = user_fixture(%{role: :none})
+      conn = log_in_user(conn, user)
+
+      assert {:error, {:redirect, %{to: "/"}}} = live(conn, ~p"/executions/new")
+    end
+
+    test "user with inventory:node:read can access /inventory", %{conn: conn} do
+      user = user_fixture(%{role: :none})
+      {:ok, role} = RBAC.create_role(%{name: "inv_test_#{System.unique_integer()}"})
+      {:ok, _} = RBAC.grant_permission(role, %{action: "inventory:node:read"})
+      :ok = RBAC.assign_role(user, role)
+      conn = log_in_user(conn, user)
+
+      assert {:ok, _view, _html} = live(conn, ~p"/inventory")
+    end
+
+    test "user with integration:health:read can access /health", %{conn: conn} do
+      user = user_fixture(%{role: :none})
+      {:ok, role} = RBAC.create_role(%{name: "health_test_#{System.unique_integer()}"})
+      {:ok, _} = RBAC.grant_permission(role, %{action: "integration:health:read"})
+      :ok = RBAC.assign_role(user, role)
+      conn = log_in_user(conn, user)
+
+      assert {:ok, _view, _html} = live(conn, ~p"/health")
+    end
+
+    test "user with execution:read can access /executions", %{conn: conn} do
+      user = user_fixture(%{role: :none})
+      {:ok, role} = RBAC.create_role(%{name: "exec_test_#{System.unique_integer()}"})
+      {:ok, _} = RBAC.grant_permission(role, %{action: "execution:read"})
+      :ok = RBAC.assign_role(user, role)
+      conn = log_in_user(conn, user)
+
+      assert {:ok, _view, _html} = live(conn, ~p"/executions")
+    end
+
+    test "user with execution:submit can access /executions/new", %{conn: conn} do
+      user = user_fixture(%{role: :none})
+      {:ok, role} = RBAC.create_role(%{name: "exec_submit_test_#{System.unique_integer()}"})
+      {:ok, _} = RBAC.grant_permission(role, %{action: "execution:submit"})
+      :ok = RBAC.assign_role(user, role)
+      conn = log_in_user(conn, user)
+
+      assert {:ok, _view, _html} = live(conn, ~p"/executions/new")
+    end
+  end
 end
