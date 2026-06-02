@@ -20,6 +20,11 @@ defmodule VigilWeb.NodeDetailLiveTest do
     {:ok, integ: integ}
   end
 
+  setup %{conn: conn} do
+    user = user_fixture()
+    %{conn: log_in_user(conn, user)}
+  end
+
   test "renders the node header with source attribution", %{conn: conn, integ: integ} do
     node_id = Inventory.encode_id(integ.id, "alpha")
     {:ok, _view, html} = live(conn, ~p"/inventory/node/#{node_id}")

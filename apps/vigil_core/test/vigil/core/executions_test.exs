@@ -1,7 +1,8 @@
 defmodule Vigil.Core.ExecutionsTest do
   use Vigil.DataCase, async: false
 
-  alias Vigil.Core.{AuditLog, Executions}
+  alias Vigil.Core.Executions
+  alias Vigil.Core.Audit.Entry, as: AuditEntry
   alias Vigil.Core.Execution.{Group, Record}
   alias Vigil.Repo
 
@@ -172,8 +173,8 @@ defmodule Vigil.Core.ExecutionsTest do
     def abort(_), do: :ok
   end
 
-  describe "audit log" do
-    test "records a minimal audit entry for every submission" do
+  describe "audit trail" do
+    test "submit creates an audit entry finalized to success" do
       principal = %{id: "audit-user-1"}
 
       {:ok, group_id} =
@@ -190,11 +191,20 @@ defmodule Vigil.Core.ExecutionsTest do
         r && r.outcome != "running"
       end)
 
-      entry = Repo.get_by!(AuditLog, user_id: "audit-user-1")
-      assert entry.action == "execution.submit"
-      assert entry.target["integration_id"] == "integ-audit"
-      assert entry.target["node_ids"] == ["audit-host"]
-      assert entry.outcome == "submitted"
+      import Ecto.Query
+
+      entry =
+        Repo.one!(
+          from e in AuditEntry,
+            where: e.action == "execution.submit" and e.actor_label == "audit-user-1"
+        )
+
+      assert entry.result == "success"
+      assert entry.finalized_at != nil
+      assert entry.target_kind == "execution_group"
+      assert entry.target_id == group_id
+      assert entry.params["integration_id"] == "integ-audit"
+      assert entry.params["node_ids"] == ["audit-host"]
     end
   end
 

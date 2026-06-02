@@ -1,0 +1,12 @@
+{
+  "name": "KiroGraph Sync on Agent Stop",
+  "version": "1.0.0",
+  "description": "Sync the KiroGraph index when the agent stops, picking up any file edits, creates, or deletes from the session.",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "kirograph sync --quiet 2>&1 > /dev/null"
+  }
+}

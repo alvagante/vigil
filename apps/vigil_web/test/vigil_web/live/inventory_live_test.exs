@@ -10,6 +10,11 @@ defmodule VigilWeb.InventoryLiveTest do
     :ok
   end
 
+  setup %{conn: conn} do
+    user = user_fixture()
+    %{conn: log_in_user(conn, user)}
+  end
+
   defp start_source(name) do
     {:ok, integ} =
       IntegrationConfig.create(%{

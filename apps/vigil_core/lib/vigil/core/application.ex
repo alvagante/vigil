@@ -14,7 +14,8 @@ defmodule Vigil.Core.Application do
       {Finch, name: Vigil.Finch},
       Vigil.Telemetry.Supervisor,
       Vigil.Core.Supervisor,
-      Vigil.Core.Execution.Supervisor
+      Vigil.Core.Execution.Supervisor,
+      Vigil.Core.RBAC.PermissionCache
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one)
