@@ -102,7 +102,7 @@ defmodule VigilWeb.LiveAuthTest do
     end
 
     test "returns {:halt, socket} when user lacks the required permission" do
-      user = user_fixture()
+      user = user_fixture(%{role: :none})
 
       assert {:halt, socket} =
                LiveAuth.on_mount(

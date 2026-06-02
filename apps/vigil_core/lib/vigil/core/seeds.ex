@@ -5,7 +5,7 @@ defmodule Vigil.Core.Seeds do
 
   alias Vigil.Repo
   alias Vigil.Core.Accounts.User
-  alias Vigil.Core.RBAC.{Role, UserRole}
+  alias Vigil.Core.RBAC.{Role, RolePermission, UserRole}
 
   @default_tenant_id "00000000-0000-0000-0000-000000000000"
 
@@ -21,6 +21,7 @@ defmodule Vigil.Core.Seeds do
     Repo.transaction(fn ->
       roles = upsert_roles()
       admin = upsert_break_glass_admin()
+      grant_administrator_wildcard(roles["administrator"])
       assign_admin_role(admin, roles["administrator"])
     end)
 
@@ -58,6 +59,12 @@ defmodule Vigil.Core.Seeds do
       existing ->
         existing
     end
+  end
+
+  defp grant_administrator_wildcard(role) do
+    %RolePermission{}
+    |> RolePermission.changeset(%{role_id: role.id, action: "*"})
+    |> Repo.insert(on_conflict: :nothing)
   end
 
   defp assign_admin_role(user, role) do

@@ -4,8 +4,21 @@ defmodule VigilWeb.UserSessionControllerTest do
   import Ecto.Query
 
   alias Vigil.Repo
-  alias Vigil.Core.Audit.Entry
+  alias Vigil.Core.{RBAC, Audit.Entry}
   alias Vigil.Core.Accounts.User
+
+  describe "user_fixture/1" do
+    test "default fixture user passes RBAC.check for any action" do
+      user = user_fixture()
+      assert :ok = RBAC.check(user, "ssh:command:execute", %RBAC.Context{})
+      assert :ok = RBAC.check(user, "platform:admin", %RBAC.Context{})
+    end
+
+    test "fixture user with role: :none is denied all actions" do
+      user = user_fixture(%{role: :none})
+      assert {:error, :denied} = RBAC.check(user, "ssh:command:execute", %RBAC.Context{})
+    end
+  end
 
   describe "POST /users/log_in" do
     test "valid credentials create session and redirect to /", %{conn: conn} do

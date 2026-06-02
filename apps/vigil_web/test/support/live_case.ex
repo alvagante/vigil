@@ -35,14 +35,25 @@ defmodule VigilWeb.LiveCase do
     Plug.Test.init_test_session(conn, %{"_vigil_token" => token})
   end
 
-  @doc "Creates a test user with a unique username."
+  @doc """
+  Creates a test user with a unique username and an administrator-level role by default.
+
+  Pass `role: :none` to create a user with no role assignments (for testing denials).
+  """
   def user_fixture(attrs \\ %{}) do
     n = System.unique_integer([:positive, :monotonic])
+    {role_opt, user_attrs} = Map.pop(attrs, :role, :administrator)
 
     {:ok, user} =
       Vigil.Core.Accounts.register_user(
-        Map.merge(%{username: "test_user_#{n}", password: "test_password_123!"}, attrs)
+        Map.merge(%{username: "test_user_#{n}", password: "test_password_123!"}, user_attrs)
       )
+
+    if role_opt != :none do
+      {:ok, role} = Vigil.Core.RBAC.create_role(%{name: "fixture_admin_#{n}"})
+      {:ok, _} = Vigil.Core.RBAC.grant_permission(role, %{action: "*"})
+      :ok = Vigil.Core.RBAC.assign_role(user, role)
+    end
 
     user
   end
