@@ -54,6 +54,17 @@ defmodule Vigil.Core.RBACTest do
       assert {:error, :denied} = RBAC.check(user, "ssh:command:execute", context())
     end
 
+    test "wildcard action \"*\" grants access to any requested action" do
+      user = make_user("rbac_wildcard_user")
+      role = make_role("rbac_wildcard_role")
+      grant(role, "*")
+      assign(user, role)
+
+      assert :ok = RBAC.check(user, "ssh:command:execute", context())
+      assert :ok = RBAC.check(user, "puppet:inventory:read", context())
+      assert :ok = RBAC.check(user, "rbac:role:update", context())
+    end
+
     test "returns :ok from union of multiple roles" do
       user = make_user("rbac_multi_user")
       role_a = make_role("rbac_multi_role_a")

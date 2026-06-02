@@ -20,7 +20,7 @@ defmodule Vigil.Core.RBAC.Evaluator do
       |> Repo.all()
 
     from(rp in RolePermission,
-      where: rp.role_id in ^role_ids and rp.action == ^action
+      where: rp.role_id in ^role_ids and (rp.action == ^action or rp.action == "*")
     )
     |> Repo.all()
   end

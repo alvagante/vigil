@@ -52,6 +52,11 @@ defmodule VigilWeb.Live.Settings.IntegrationsLiveTest do
     assert IntegrationConfig.list_all() |> Enum.any?(&(&1.name == "test-noop"))
   end
 
+  test "user without platform:admin permission is redirected away" do
+    unprivileged_conn = log_in_user(Phoenix.ConnTest.build_conn(), user_fixture(%{role: :none}))
+    assert {:error, {:redirect, %{to: "/"}}} = live(unprivileged_conn, ~p"/settings/integrations")
+  end
+
   test "enable and disable buttons toggle the enabled state", %{conn: conn} do
     {:ok, integration} =
       IntegrationConfig.create(%{

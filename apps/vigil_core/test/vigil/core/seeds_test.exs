@@ -4,9 +4,9 @@ defmodule Vigil.Core.SeedsTest do
   import Ecto.Query
 
   alias Vigil.Repo
-  alias Vigil.Core.Seeds
+  alias Vigil.Core.{Seeds, RBAC, Accounts}
   alias Vigil.Core.Accounts.User
-  alias Vigil.Core.RBAC.{Role, UserRole}
+  alias Vigil.Core.RBAC.{Role, UserRole, RolePermission}
 
   describe "seed/0" do
     test "creates the break-glass admin user" do
@@ -36,6 +36,25 @@ defmodule Vigil.Core.SeedsTest do
                from ur in UserRole,
                  where: ur.user_id == ^admin.id and ur.role_id == ^admin_role.id
              )
+    end
+
+    test "grants wildcard permission \"*\" to the administrator role" do
+      Seeds.seed()
+      admin_role = Repo.one!(from r in Role, where: r.name == "administrator")
+
+      assert Repo.exists?(
+               from rp in RolePermission,
+                 where: rp.role_id == ^admin_role.id and rp.action == "*"
+             )
+    end
+
+    test "seeded break-glass admin passes RBAC.check for any action" do
+      Seeds.seed()
+      admin = Repo.one!(from u in User, where: u.is_break_glass == true)
+
+      assert :ok = RBAC.check(admin, "ssh:command:execute", %RBAC.Context{})
+      assert :ok = RBAC.check(admin, "rbac:role:update", %RBAC.Context{})
+      assert :ok = RBAC.check(admin, "platform:admin", %RBAC.Context{})
     end
 
     test "is idempotent — calling twice produces one admin and five roles" do
