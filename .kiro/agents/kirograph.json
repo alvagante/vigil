@@ -1,0 +1,68 @@
+{
+  "name": "kirograph",
+  "description": "KiroGraph-aware agent — uses the semantic code graph for faster, smarter exploration.",
+  "resources": [
+    "file://.kiro/steering/kirograph.md"
+  ],
+  "tools": [
+    "@builtin",
+    "@kirograph"
+  ],
+  "allowedTools": [
+    "@kirograph/kirograph_search",
+    "@kirograph/kirograph_context",
+    "@kirograph/kirograph_callers",
+    "@kirograph/kirograph_callees",
+    "@kirograph/kirograph_impact",
+    "@kirograph/kirograph_node",
+    "@kirograph/kirograph_status",
+    "@kirograph/kirograph_files",
+    "@kirograph/kirograph_dead_code",
+    "@kirograph/kirograph_circular_deps",
+    "@kirograph/kirograph_path",
+    "@kirograph/kirograph_architecture",
+    "@kirograph/kirograph_coupling",
+    "@kirograph/kirograph_package",
+    "@kirograph/kirograph_hotspots",
+    "@kirograph/kirograph_surprising",
+    "@kirograph/kirograph_diff",
+    "@kirograph/kirograph_type_hierarchy",
+    "@kirograph/kirograph_exec",
+    "@kirograph/kirograph_gain",
+    "@kirograph/kirograph_mem_search",
+    "@kirograph/kirograph_mem_store",
+    "@kirograph/kirograph_mem_timeline",
+    "@kirograph/kirograph_mem_status",
+    "@kirograph/kirograph_docs_toc",
+    "@kirograph/kirograph_docs_search",
+    "@kirograph/kirograph_docs_section",
+    "@kirograph/kirograph_docs_outline",
+    "@kirograph/kirograph_docs_refs",
+    "@kirograph/kirograph_data_list",
+    "@kirograph/kirograph_data_describe",
+    "@kirograph/kirograph_data_query",
+    "@kirograph/kirograph_data_aggregate",
+    "@kirograph/kirograph_data_search",
+    "@kirograph/kirograph_data_join",
+    "@kirograph/kirograph_data_correlations",
+    "@kirograph/kirograph_data_quality"
+  ],
+  "useLegacyMcpJson": true,
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "kirograph sync-if-dirty --quiet 2>/dev/null || true"
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": "kirograph sync-if-dirty --quiet 2>/dev/null || true"
+      }
+    ],
+    "stop": [
+      {
+        "command": "kirograph sync-if-dirty --quiet 2>/dev/null || true"
+      }
+    ]
+  }
+}

@@ -11,6 +11,11 @@ defmodule VigilWeb.ExecutionLiveTest do
     :ok
   end
 
+  setup %{conn: conn} do
+    user = user_fixture()
+    %{conn: log_in_user(conn, user)}
+  end
+
   defp start_exec_integration(name) do
     {:ok, integ} =
       IntegrationConfig.create(%{

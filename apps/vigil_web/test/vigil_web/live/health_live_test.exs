@@ -3,6 +3,11 @@ defmodule VigilWeb.Live.HealthLiveTest do
 
   alias Vigil.Core.IntegrationConfig
 
+  setup %{conn: conn} do
+    user = user_fixture()
+    %{conn: log_in_user(conn, user)}
+  end
+
   test "renders the integration health header", %{conn: conn} do
     {:ok, _view, html} = live(conn, ~p"/health")
     assert html =~ "Integration Health"

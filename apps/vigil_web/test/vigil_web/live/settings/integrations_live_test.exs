@@ -8,6 +8,11 @@ defmodule VigilWeb.Live.Settings.IntegrationsLiveTest do
     :ok
   end
 
+  setup %{conn: conn} do
+    user = user_fixture()
+    %{conn: log_in_user(conn, user)}
+  end
+
   test "renders the empty state when no integrations are configured", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/settings/integrations")
     assert render(view) =~ "No integrations configured"

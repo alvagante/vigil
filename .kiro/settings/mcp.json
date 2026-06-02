@@ -2,14 +2,19 @@
   "mcpServers": {
     "fetch": {
       "command": "uvx",
-      "args": ["mcp-server-fetch"],
+      "args": [
+        "mcp-server-fetch"
+      ],
       "env": {},
       "disabled": false,
       "autoApprove": []
     },
     "hexdocs-mcp": {
       "command": "npx",
-      "args": ["-y", "hexdocs-mcp@0.5.0"],
+      "args": [
+        "-y",
+        "hexdocs-mcp@0.5.0"
+      ],
       "env": {
         "HEXDOCS_MCP_DEFAULT_EMBEDDING_MODEL": "nomic-embed-text"
       },
@@ -18,7 +23,9 @@
     },
     "aws-docs": {
       "command": "uvx",
-      "args": ["awslabs.aws-documentation-mcp-server@latest"],
+      "args": [
+        "awslabs.aws-documentation-mcp-server@latest"
+      ],
       "env": {
         "FASTMCP_LOG_LEVEL": "ERROR"
       },
@@ -41,6 +48,53 @@
       "type": "http",
       "url": "http://localhost:4000/tidewave/mcp",
       "disabled": true
+    },
+    "kirograph": {
+      "command": "kirograph",
+      "args": [
+        "serve",
+        "--mcp"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "kirograph_search",
+        "kirograph_context",
+        "kirograph_callers",
+        "kirograph_callees",
+        "kirograph_impact",
+        "kirograph_node",
+        "kirograph_status",
+        "kirograph_files",
+        "kirograph_dead_code",
+        "kirograph_circular_deps",
+        "kirograph_path",
+        "kirograph_architecture",
+        "kirograph_coupling",
+        "kirograph_package",
+        "kirograph_hotspots",
+        "kirograph_surprising",
+        "kirograph_diff",
+        "kirograph_type_hierarchy",
+        "kirograph_exec",
+        "kirograph_gain",
+        "kirograph_mem_search",
+        "kirograph_mem_store",
+        "kirograph_mem_timeline",
+        "kirograph_mem_status",
+        "kirograph_docs_toc",
+        "kirograph_docs_search",
+        "kirograph_docs_section",
+        "kirograph_docs_outline",
+        "kirograph_docs_refs",
+        "kirograph_data_list",
+        "kirograph_data_describe",
+        "kirograph_data_query",
+        "kirograph_data_aggregate",
+        "kirograph_data_search",
+        "kirograph_data_join",
+        "kirograph_data_correlations",
+        "kirograph_data_quality"
+      ]
     }
   }
 }

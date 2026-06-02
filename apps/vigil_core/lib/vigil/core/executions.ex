@@ -14,7 +14,7 @@ defmodule Vigil.Core.Executions do
     restarts. Checkpoint/drain machinery lands in #15 (ADR-0007).
   """
 
-  alias Vigil.Core.AuditLog
+  alias Vigil.Core.Audit
   alias Vigil.Core.Execution.{Group, Record, Supervisor}
   alias Vigil.Repo
 
@@ -68,22 +68,18 @@ defmodule Vigil.Core.Executions do
             %{execution_id: record.id, node_id: node_id}
           end)
 
-        Repo.insert!(%AuditLog{
-          occurred_at: now,
-          user_id: principal.id,
-          action: "execution.submit",
-          target: %{
-            integration_id: integration_id,
-            node_ids: node_ids
-          },
-          outcome: "submitted"
-        })
+        {:ok, audit_pending} =
+          Audit.write_pending(principal, "execution.submit",
+            target_kind: "execution_group",
+            target_id: group.id,
+            params: %{integration_id: integration_id, node_ids: node_ids}
+          )
 
-        {group, targets}
+        {group, targets, audit_pending}
       end)
 
     case result do
-      {:ok, {group, targets}} ->
+      {:ok, {group, targets, audit_pending}} ->
         case Supervisor.start_stream(%{
                runner_module: runner_module,
                integration_id: integration_id,
@@ -93,9 +89,11 @@ defmodule Vigil.Core.Executions do
                timeout: timeout
              }) do
           {:ok, _pid} ->
+            Audit.finalize(audit_pending, :success)
             {:ok, group.id}
 
           {:error, reason} ->
+            Audit.finalize(audit_pending, :failure)
             {:error, reason}
         end
 

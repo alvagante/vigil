@@ -45,7 +45,9 @@ defmodule Vigil.Core.MixProject do
       {:finch, "~> 0.19"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
-      {:jason, "~> 1.2"}
+      {:jason, "~> 1.2"},
+      {:argon2_elixir, "~> 3.0"},
+      {:stream_data, "~> 1.0", only: :test}
     ]
   end
 end
