@@ -18,6 +18,14 @@ defmodule VigilWeb.Router do
   scope "/", VigilWeb do
     pipe_through :browser
 
+    live_session :public,
+      on_mount: [{VigilWeb.LiveAuth, :mount_current_user}] do
+      live "/users/log_in", Live.UserSessionLive
+    end
+
+    post "/users/log_in", UserSessionController, :create
+    delete "/users/log_out", UserSessionController, :delete
+
     live_session :authenticated,
       on_mount: [{VigilWeb.LiveAuth, :require_authenticated}] do
       live "/", DashboardLive

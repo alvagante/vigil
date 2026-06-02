@@ -69,6 +69,13 @@ defmodule Vigil.Core.Accounts do
     end
   end
 
+  def delete_user(%User{is_break_glass: true}), do: {:error, :break_glass_protected}
+
+  def delete_user(%User{} = user) do
+    Repo.delete(user)
+    :ok
+  end
+
   def delete_session(token) when is_binary(token) do
     token_hash = :crypto.hash(:sha256, token)
     Repo.delete_all(from s in Session, where: s.token_hash == ^token_hash)
