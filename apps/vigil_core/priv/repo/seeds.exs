@@ -1,0 +1,1 @@
+Vigil.Core.Seeds.seed()

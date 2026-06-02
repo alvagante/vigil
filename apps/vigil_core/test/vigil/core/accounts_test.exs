@@ -1,6 +1,9 @@
 defmodule Vigil.Core.AccountsTest do
   use Vigil.DataCase, async: true
 
+  import Ecto.Query
+
+  alias Vigil.Repo
   alias Vigil.Core.Accounts
 
   describe "register_user/1" do
@@ -76,6 +79,25 @@ defmodule Vigil.Core.AccountsTest do
 
     test "fetch_session returns {:error, :not_found} for unknown token" do
       assert {:error, :not_found} = Accounts.fetch_session("not_a_real_token_value_xyz")
+    end
+  end
+
+  describe "delete_user/1" do
+    test "deletes a regular user" do
+      {:ok, user} = Accounts.register_user(%{username: "grace", password: "deletable_pass_123!"})
+      assert :ok = Accounts.delete_user(user)
+      assert Repo.get(Vigil.Core.Accounts.User, user.id) == nil
+    end
+
+    test "rejects deletion of a break-glass user" do
+      {:ok, user} = Accounts.register_user(%{username: "admin_bg", password: "break_glass_pass_123!"})
+      Repo.update_all(
+        from(u in Vigil.Core.Accounts.User, where: u.id == ^user.id),
+        set: [is_break_glass: true]
+      )
+      bg_user = Repo.get!(Vigil.Core.Accounts.User, user.id)
+      assert {:error, :break_glass_protected} = Accounts.delete_user(bg_user)
+      assert Repo.get(Vigil.Core.Accounts.User, user.id) != nil
     end
   end
 
