@@ -69,6 +69,10 @@ defmodule Vigil.Core.Accounts do
     end
   end
 
+  def get_user_by_username(username) do
+    Repo.one(from u in User, where: u.username == ^username)
+  end
+
   def delete_user(%User{is_break_glass: true}), do: {:error, :break_glass_protected}
 
   def delete_user(%User{} = user) do

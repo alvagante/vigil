@@ -1,8 +1,28 @@
 defmodule Vigil.Core.RBAC do
+  import Ecto.Query
   alias Vigil.Repo
   alias Vigil.Core.RBAC.{Role, RolePermission, UserRole, Evaluator}
 
   defdelegate check(principal, action, context), to: Evaluator
+
+  def list_roles do
+    Repo.all(
+      from r in Role,
+        order_by: [asc: r.name],
+        preload: [:role_permissions, user_roles: :user]
+    )
+  end
+
+  def list_permissions_for(role) do
+    Repo.all(from rp in RolePermission, where: rp.role_id == ^role.id)
+  end
+
+  def revoke_permission(permission_id) do
+    case Repo.get(RolePermission, permission_id) do
+      nil -> {:error, :not_found}
+      perm -> Repo.delete(perm)
+    end
+  end
 
   def create_role(attrs) do
     %Role{}

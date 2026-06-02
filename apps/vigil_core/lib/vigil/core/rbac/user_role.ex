@@ -11,6 +11,8 @@ defmodule Vigil.Core.RBAC.UserRole do
     field :source, :string, primary_key: true
     field :assigned_at, :utc_datetime_usec
     field :assigned_by, :binary_id
+
+    belongs_to :user, Vigil.Core.Accounts.User, define_field: false
   end
 
   def changeset(ur, attrs) do
