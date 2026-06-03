@@ -5,17 +5,19 @@ defmodule VigilWeb.Inventory do
 
   The Dispatcher fan-out lives here in `vigil_web` rather than `vigil_core`
   because core must not call down into `vigil_plugin` (design §2 dependency
-  direction). This is the minimal synchronous fan-out: one source per node, no
-  cache, no progressive per-source streaming. The shared cache (#12), unified
-  cross-source linking (#22), and 10k-node streaming arrive later; this honours
-  the same `Vigil.Core.Facts` row shape so those slices can replace the
-  fetch strategy without changing the rendering contract.
+  direction). Results are served from the shared integration cache (ADR-0006);
+  RBAC target-scope filtering via `filter_targets/3` is applied before any data
+  leaves this module — unfiltered cache entries never cross the application
+  boundary.
+
+  Pagination is a post-filter operation (ADR-0006): the cursor applies to the
+  principal-filtered node list, not the raw integration result.
 
   Node IDs are opaque composites of `integration_id` + the plugin's node name,
   URL-safe Base64 encoded. `#22`'s persisted node identities supersede this.
   """
 
-  alias Vigil.Core.{Facts, IntegrationConfig}
+  alias Vigil.Core.{Facts, IntegrationConfig, RBAC}
   alias Vigil.Plugin.{Catalog, Dispatcher, Result}
 
   @sep "\n"
@@ -30,27 +32,42 @@ defmodule VigilWeb.Inventory do
         }
 
   @doc """
-  Aggregate inventory across all enabled inventory-capable integrations.
-  Returns the flattened node entries plus a per-source status summary (so the
-  UI can show which sources are OK and which are down — `INV-201`, `ERR-*`).
-  """
-  @spec list_inventory() :: %{nodes: [entry()], sources: [map()]}
-  def list_inventory do
-    results =
-      enabled_sources(:inventory)
-      |> Enum.map(fn integ ->
-        case Dispatcher.call(integ.id, :inventory, :list_nodes, %{}) do
-          {:ok, %Result{data: nodes, fetched_at: at}} ->
-            %{integration: integ, status: :ok, fetched_at: at, nodes: entries(integ, nodes, at)}
+  Aggregate inventory across all enabled inventory-capable integrations, apply
+  RBAC target-scope filtering for `principal`, and paginate.
 
-          {:error, error} ->
-            %{integration: integ, status: {:error, error}, fetched_at: nil, nodes: []}
-        end
+  Options:
+  - `page_size: integer` — max nodes to return per page (default: all)
+  - `cursor: string` — ID of the last node seen (nil = start of list)
+
+  Returns `%{nodes: page, sources: source_summaries, next_cursor: id | nil, total_filtered: integer}`.
+  """
+  @spec list_inventory(term(), keyword()) :: %{
+          nodes: [entry()],
+          sources: [map()],
+          next_cursor: String.t() | nil,
+          total_filtered: non_neg_integer()
+        }
+  def list_inventory(principal, opts \\ []) do
+    page_size = Keyword.get(opts, :page_size)
+    cursor = Keyword.get(opts, :cursor)
+
+    raw_results = fan_out(:inventory)
+
+    filtered_nodes =
+      raw_results
+      |> Enum.filter(&match?(%{status: :ok}, &1))
+      |> Enum.flat_map(fn %{integration: integ, nodes: nodes} ->
+        RBAC.filter_targets(nodes, principal, integ.id)
       end)
 
+    total_filtered = length(filtered_nodes)
+    {page, next_cursor} = paginate(filtered_nodes, cursor, page_size)
+
     %{
-      nodes: Enum.flat_map(results, & &1.nodes),
-      sources: Enum.map(results, &source_summary/1)
+      nodes: page,
+      sources: Enum.map(raw_results, &source_summary/1),
+      next_cursor: next_cursor,
+      total_filtered: total_filtered
     }
   end
 
@@ -91,6 +108,36 @@ defmodule VigilWeb.Inventory do
   end
 
   ## Internal
+
+  defp fan_out(capability) do
+    enabled_sources(capability)
+    |> Enum.map(fn integ ->
+      case Dispatcher.call(integ.id, capability, :list_nodes, %{}) do
+        {:ok, %Result{data: nodes, fetched_at: at}} ->
+          %{integration: integ, status: :ok, fetched_at: at, nodes: entries(integ, nodes, at)}
+
+        {:error, error} ->
+          %{integration: integ, status: {:error, error}, fetched_at: nil, nodes: []}
+      end
+    end)
+  end
+
+  defp paginate(nodes, cursor, nil), do: {after_cursor(nodes, cursor), nil}
+
+  defp paginate(nodes, cursor, page_size) do
+    tail = after_cursor(nodes, cursor)
+    page = Enum.take(tail, page_size)
+    next_cursor = if length(tail) > page_size, do: List.last(page).id, else: nil
+    {page, next_cursor}
+  end
+
+  defp after_cursor(nodes, nil), do: nodes
+
+  defp after_cursor(nodes, cursor) do
+    nodes
+    |> Enum.drop_while(&(&1.id != cursor))
+    |> Enum.drop(1)
+  end
 
   defp entries(integ, nodes, fetched_at) do
     source = source_meta(integ, fetched_at)
@@ -140,7 +187,6 @@ defmodule VigilWeb.Inventory do
   defp fetch_integration(integration_id) do
     {:ok, IntegrationConfig.get!(integration_id)}
   rescue
-    # Missing row, or a hand-crafted id whose decoded prefix isn't a valid UUID.
     _e in [Ecto.NoResultsError, Ecto.Query.CastError] -> {:error, :not_found}
   end
 

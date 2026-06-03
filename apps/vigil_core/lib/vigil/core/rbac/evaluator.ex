@@ -29,6 +29,25 @@ defmodule Vigil.Core.RBAC.Evaluator do
     end)
   end
 
+  @doc """
+  Filters `nodes` to those visible to `principal` under `"inventory:node:read"`.
+
+  Loads the principal's effective permissions **once** (2 DB queries) then
+  evaluates each node in-memory — O(permissions × nodes), zero additional
+  queries (RBAC-107, RBAC-108, ADR-0006). Respects both `integration_id`
+  scoping and `target_selector` tag-matching on each permission.
+  """
+  def filter_targets(nodes, principal, integration_id) do
+    permissions = effective_permissions(principal.id, "inventory:node:read")
+
+    Enum.filter(nodes, fn node ->
+      Enum.any?(permissions, fn perm ->
+        integration_matches?(perm, integration_id) and
+          node_in_selector?(node, perm.target_selector || %{})
+      end)
+    end)
+  end
+
   # Two DB queries total, regardless of target count in context.
   defp effective_permissions(principal_id, action) do
     role_ids =

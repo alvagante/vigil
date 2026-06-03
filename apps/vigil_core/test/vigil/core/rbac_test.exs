@@ -387,6 +387,87 @@ defmodule Vigil.Core.RBACTest do
     end
   end
 
+  describe "filter_targets/3 — RBAC-107, ADR-0006" do
+    test "returns all nodes when principal has unrestricted inventory:node:read" do
+      user = make_user("ft_all_user")
+      role = make_role("ft_all_role")
+      grant(role, "inventory:node:read")
+      assign(user, role)
+
+      nodes = [
+        %{id: "n1", name: "node1", tags: %{}, targetable?: true, attributes: %{}, source: %{}},
+        %{id: "n2", name: "node2", tags: %{}, targetable?: true, attributes: %{}, source: %{}}
+      ]
+
+      assert ^nodes = RBAC.filter_targets(nodes, user, "integ-1")
+    end
+
+    test "returns empty list when principal has no inventory:node:read permission" do
+      user = make_user("ft_none_user")
+
+      nodes = [
+        %{id: "n1", name: "node1", tags: %{}, targetable?: true, attributes: %{}, source: %{}}
+      ]
+
+      assert [] = RBAC.filter_targets(nodes, user, "integ-1")
+    end
+
+    test "applies target_selector scoping — returns only nodes matching the selector" do
+      user = make_user("ft_scoped_user")
+      role = make_role("ft_scoped_role")
+
+      {:ok, _} =
+        RBAC.grant_permission(role, %{
+          action: "inventory:node:read",
+          target_selector: %{"tags" => %{"env" => "prod"}}
+        })
+
+      assign(user, role)
+
+      nodes = [
+        %{id: "n1", name: "prod-node", tags: %{"env" => "prod"}, targetable?: true, attributes: %{}, source: %{}},
+        %{id: "n2", name: "dev-node", tags: %{"env" => "dev"}, targetable?: true, attributes: %{}, source: %{}}
+      ]
+
+      result = RBAC.filter_targets(nodes, user, "integ-1")
+      assert length(result) == 1
+      assert hd(result).id == "n1"
+    end
+
+    test "issues exactly 2 DB queries regardless of node count (RBAC-108 invariant)" do
+      user = make_user("ft_query_user")
+      role = make_role("ft_query_role")
+      grant(role, "inventory:node:read")
+      assign(user, role)
+
+      counts =
+        for n <- [1, 10, 100] do
+          nodes =
+            Enum.map(1..n, fn i ->
+              %{id: "node-#{i}", name: "node-#{i}", tags: %{}, targetable?: true, attributes: %{}, source: %{}}
+            end)
+
+          count_queries(fn -> RBAC.filter_targets(nodes, user, "integ-1") end)
+        end
+
+      assert counts == [2, 2, 2]
+    end
+
+    test "admin with wildcard * permission sees all nodes" do
+      user = make_user("ft_admin_user")
+      role = make_role("ft_admin_role")
+      grant(role, "*")
+      assign(user, role)
+
+      nodes = [
+        %{id: "n1", name: "node1", tags: %{}, targetable?: true, attributes: %{}, source: %{}},
+        %{id: "n2", name: "node2", tags: %{}, targetable?: true, attributes: %{}, source: %{}}
+      ]
+
+      assert ^nodes = RBAC.filter_targets(nodes, user, "integ-1")
+    end
+  end
+
   defp receive_count(ref, acc) do
     receive do
       {:query, ^ref} -> receive_count(ref, acc + 1)

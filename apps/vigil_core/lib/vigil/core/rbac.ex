@@ -5,6 +5,7 @@ defmodule Vigil.Core.RBAC do
 
   defdelegate check(principal, action, context), to: Evaluator
   defdelegate partition(principal, action, context), to: Evaluator
+  defdelegate filter_targets(nodes, principal, integration_id), to: Evaluator
 
   def list_roles do
     Repo.all(
