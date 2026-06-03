@@ -38,6 +38,9 @@ defmodule Vigil.Plugin.Dispatcher do
       {:ok, %Cache.Entry{data: %Result{} = result}, :hit} ->
         {:ok, %Result{result | freshness: :cached}}
 
+      {:ok, %Cache.Entry{data: %Result{} = result}, :stale} ->
+        {:ok, %Result{result | freshness: :stale}}
+
       {:error, _} = err ->
         err
     end

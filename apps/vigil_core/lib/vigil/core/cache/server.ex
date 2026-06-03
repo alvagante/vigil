@@ -96,7 +96,7 @@ defmodule Vigil.Core.Cache.Server do
     # Re-check cache under GenServer lock — another caller may have populated it.
     case get(integration_id, capability, action, args) do
       {:ok, entry} ->
-        {:reply, {:ok, entry}, state}
+        {:reply, {:ok, entry, :hit}, state}
 
       :miss ->
         in_flight = state.in_flight
