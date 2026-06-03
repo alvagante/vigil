@@ -1,7 +1,7 @@
 defmodule Vigil.Core.ExecutionsTest do
   use Vigil.DataCase, async: false
 
-  alias Vigil.Core.Executions
+  alias Vigil.Core.{Accounts, Executions, RBAC}
   alias Vigil.Core.Audit.Entry, as: AuditEntry
   alias Vigil.Core.Execution.{Group, Record}
   alias Vigil.Repo
@@ -27,6 +27,140 @@ defmodule Vigil.Core.ExecutionsTest do
     end
 
     def abort(_), do: :ok
+  end
+
+  # Helpers for RBAC-gated tests
+  defp make_user(username) do
+    {:ok, user} = Accounts.register_user(%{username: username, password: "exec_rbac_pass!"})
+    user
+  end
+
+  defp make_role(name) do
+    {:ok, role} = RBAC.create_role(%{name: name})
+    role
+  end
+
+  defp grant(role, action) do
+    {:ok, _} = RBAC.grant_permission(role, %{action: action})
+  end
+
+  defp assign_role(user, role) do
+    :ok = RBAC.assign_role(user, role, source: "direct")
+  end
+
+  describe "submit/2 RBAC enforcement" do
+    test "all-denied submission returns error and writes no execution records (ADR-0005)" do
+      user = make_user("exec_deny_user")
+      # No role — all targets denied
+
+      assert {:error, :all_denied} =
+               Executions.submit(user, %{
+                 runner_module: FakeRunner,
+                 integration_id: "integ-rbac-deny",
+                 artifact: %{kind: :command, text: "rm -rf /"},
+                 targets: %{node_ids: ["host1"]},
+                 permission_action: "ssh:command:execute"
+               })
+
+      import Ecto.Query
+      assert [] = Repo.all(from r in Record, where: r.node_id == "host1")
+    end
+
+    test "all-denied submission writes a denied audit entry with full target list" do
+      user = make_user("exec_deny_audit_user")
+
+      Executions.submit(user, %{
+        runner_module: FakeRunner,
+        integration_id: "integ-rbac-audit",
+        artifact: %{kind: :command, text: "rm -rf /"},
+        targets: %{node_ids: ["host-a", "host-b"]},
+        permission_action: "ssh:command:execute"
+      })
+
+      import Ecto.Query
+
+      entry =
+        Repo.one!(
+          from e in AuditEntry,
+            where: e.action == "execution.submit" and e.actor_user_id == ^user.id
+        )
+
+      assert entry.result == "denied"
+      assert entry.params["node_ids"] == ["host-a", "host-b"]
+      assert entry.params["denied_node_ids"] == ["host-a", "host-b"]
+      assert entry.params["permitted_count"] == 0
+    end
+
+    test "permitted submission with permission_action proceeds normally" do
+      user = make_user("exec_permit_user")
+      role = make_role("exec_permit_role")
+      grant(role, "ssh:command:execute")
+      assign_role(user, role)
+
+      assert {:ok, group_id} =
+               Executions.submit(user, %{
+                 runner_module: FakeRunner,
+                 integration_id: "integ-rbac-ok",
+                 artifact: %{kind: :command, text: "uptime"},
+                 targets: %{node_ids: ["host-ok"]},
+                 permission_action: "ssh:command:execute"
+               })
+
+      assert is_binary(group_id)
+    end
+
+    test "command_policy denial blocks execution and writes denied audit entry" do
+      user = make_user("exec_cmd_deny_user")
+      role = make_role("exec_cmd_deny_role")
+      {:ok, _} = RBAC.grant_permission(role, %{
+        action: "ssh:command:execute",
+        command_policy: %{"allow" => ["uptime"], "deny" => []}
+      })
+      assign_role(user, role)
+
+      assert {:error, :all_denied} =
+               Executions.submit(user, %{
+                 runner_module: FakeRunner,
+                 integration_id: "integ-cmd-deny",
+                 artifact: %{kind: :command, text: "rm -rf /"},
+                 targets: %{node_ids: ["host-cmd"]},
+                 permission_action: "ssh:command:execute"
+               })
+
+      import Ecto.Query
+      assert [] = Repo.all(from r in Record, where: r.node_id == "host-cmd")
+    end
+
+    test "partial dispatch: permitted targets get records, denied targets get only audit (ADR-0005 DM-601)" do
+      # Set up: user has permission with target_selector on env=prod only
+      user = make_user("exec_partial_user")
+      role = make_role("exec_partial_role")
+      {:ok, _} = RBAC.grant_permission(role, %{
+        action: "ssh:command:execute",
+        target_selector: %{"tags" => %{"env" => ["prod"]}}
+      })
+      assign_role(user, role)
+
+      prod_node = %{id: "prod-host", tags: %{"env" => "prod"}}
+      dev_node = %{id: "dev-host", tags: %{"env" => "dev"}}
+      node_ids = [prod_node.id, dev_node.id]
+
+      assert {:ok, group_id} =
+               Executions.submit(user, %{
+                 runner_module: FakeRunner,
+                 integration_id: "integ-partial",
+                 artifact: %{kind: :command, text: "uptime"},
+                 targets: %{node_ids: node_ids, resolved: [prod_node, dev_node]},
+                 permission_action: "ssh:command:execute"
+               })
+
+      import Ecto.Query
+      records = Repo.all(from r in Record, where: r.execution_group_id == ^group_id)
+      record_node_ids = Enum.map(records, & &1.node_id)
+
+      assert "prod-host" in record_node_ids
+      refute "dev-host" in record_node_ids
+    end
   end
 
   describe "submit/2" do

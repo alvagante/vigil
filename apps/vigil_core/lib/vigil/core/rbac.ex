@@ -4,6 +4,7 @@ defmodule Vigil.Core.RBAC do
   alias Vigil.Core.RBAC.{Role, RolePermission, UserRole, Evaluator}
 
   defdelegate check(principal, action, context), to: Evaluator
+  defdelegate partition(principal, action, context), to: Evaluator
 
   def list_roles do
     Repo.all(

@@ -13,6 +13,11 @@ defmodule VigilWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug VigilWeb.TokenAuthPlug
+  end
+
+  pipeline :api_require_auth do
+    plug VigilWeb.Plugs.RequireAuthPlug
   end
 
   scope "/", VigilWeb do
@@ -29,6 +34,7 @@ defmodule VigilWeb.Router do
     live_session :authenticated,
       on_mount: [{VigilWeb.LiveAuth, :require_authenticated}] do
       live "/", DashboardLive
+      live "/settings/tokens", Live.Settings.APITokensLive
     end
 
     live_session :inventory_access,
@@ -61,8 +67,9 @@ defmodule VigilWeb.Router do
     end
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", VigilWeb do
-  #   pipe_through :api
-  # end
+  scope "/api/v1", VigilWeb.API do
+    pipe_through [:api, :api_require_auth]
+
+    post "/executions", ExecutionController, :create
+  end
 end

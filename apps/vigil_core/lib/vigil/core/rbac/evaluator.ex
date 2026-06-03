@@ -1,7 +1,7 @@
 defmodule Vigil.Core.RBAC.Evaluator do
   import Ecto.Query
   alias Vigil.Repo
-  alias Vigil.Core.RBAC.{RolePermission, UserRole}
+  alias Vigil.Core.RBAC.{GlobPolicy, RolePermission, UserRole}
 
   def check(principal, action, context) do
     principal.id
@@ -11,6 +11,22 @@ defmodule Vigil.Core.RBAC.Evaluator do
       true -> :ok
       false -> {:error, :denied}
     end
+  end
+
+  @doc """
+  Partitions `context.resolved_targets` into `{permitted, denied}`.
+
+  Loads the principal's permissions **once** (2 DB queries) then evaluates
+  each target in-memory — constant query count regardless of target count
+  (TEST-202 / RBAC-108 invariant). ADR-0005 DM-601 shape.
+  """
+  def partition(principal, action, context) do
+    permissions = effective_permissions(principal.id, action)
+
+    Enum.split_with(context.resolved_targets, fn target ->
+      single_ctx = %{context | resolved_targets: [target]}
+      Enum.any?(permissions, &permits?(&1, single_ctx))
+    end)
   end
 
   # Two DB queries total, regardless of target count in context.
@@ -27,8 +43,19 @@ defmodule Vigil.Core.RBAC.Evaluator do
 
   defp permits?(permission, context) do
     integration_matches?(permission, context.integration_id) and
-      target_matches?(permission, context.resolved_targets)
+      target_matches?(permission, context.resolved_targets) and
+      command_matches?(permission.command_policy, context.artifact)
   end
+
+  defp command_matches?(policy, artifact) do
+    command = artifact_to_command_string(artifact)
+    GlobPolicy.matches?(policy, command)
+  end
+
+  defp artifact_to_command_string(nil), do: ""
+  defp artifact_to_command_string(%{text: t}) when is_binary(t), do: t
+  defp artifact_to_command_string(%{"text" => t}) when is_binary(t), do: t
+  defp artifact_to_command_string(_), do: ""
 
   defp integration_matches?(%{integration_id: nil}, _), do: true
   defp integration_matches?(%{integration_id: perm_id}, ctx_id), do: perm_id == ctx_id
