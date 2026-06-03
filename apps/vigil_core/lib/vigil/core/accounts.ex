@@ -2,7 +2,12 @@ defmodule Vigil.Core.Accounts do
   import Ecto.Query
 
   alias Vigil.Repo
-  alias Vigil.Core.Accounts.{User, Session}
+  alias Vigil.Core.Accounts.{APITokens, User, Session}
+
+  defdelegate mint_token(user, name, opts), to: APITokens, as: :mint
+  defdelegate list_tokens(user), to: APITokens, as: :list_for_user
+  defdelegate revoke_token(token_id), to: APITokens, as: :revoke
+  defdelegate lookup_token(encoded), to: APITokens, as: :lookup
 
   @default_tenant_id "00000000-0000-0000-0000-000000000000"
   @session_absolute_ttl_hours 24 * 7

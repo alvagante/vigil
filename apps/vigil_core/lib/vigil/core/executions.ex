@@ -16,6 +16,8 @@ defmodule Vigil.Core.Executions do
 
   alias Vigil.Core.Audit
   alias Vigil.Core.Execution.{Group, Record, Supervisor}
+  alias Vigil.Core.RBAC
+  alias Vigil.Core.RBAC.Context, as: RBACContext
   alias Vigil.Repo
 
   @doc """
@@ -34,71 +36,115 @@ defmodule Vigil.Core.Executions do
       runner_module: runner_module,
       integration_id: integration_id,
       artifact: artifact,
-      targets: %{node_ids: node_ids}
+      targets: targets_param
     } = params
 
+    node_ids = targets_param.node_ids
     timeout = Map.get(params, :timeout, %{})
     now = DateTime.utc_now()
 
-    result =
-      Repo.transaction(fn ->
-        group =
-          Repo.insert!(%Group{
-            integration_id: integration_id,
-            artifact: artifact,
-            intended_targets: %{node_ids: node_ids},
-            dispatched_count: length(node_ids),
-            submitted_by: principal.id,
-            submitted_at: now
-          })
+    # RBAC partition (ADR-0005): when permission_action is given, split
+    # targets into permitted / denied before touching the DB.
+    {permitted_ids, denied_ids} = rbac_partition(principal, params, integration_id, artifact, node_ids)
 
-        targets =
-          Enum.map(node_ids, fn node_id ->
-            record =
-              Repo.insert!(%Record{
-                execution_group_id: group.id,
+    if permitted_ids == [] do
+      Audit.write_finalized(principal, "execution.submit", :denied,
+        target_kind: "execution_submit",
+        params: %{
+          integration_id: integration_id,
+          node_ids: node_ids,
+          denied_node_ids: denied_ids,
+          permitted_count: 0
+        }
+      )
+
+      {:error, :all_denied}
+    else
+      result =
+        Repo.transaction(fn ->
+          group =
+            Repo.insert!(%Group{
+              integration_id: integration_id,
+              artifact: artifact,
+              intended_targets: %{node_ids: node_ids},
+              dispatched_count: length(permitted_ids),
+              submitted_by: to_string(principal.id),
+              submitted_at: now
+            })
+
+          run_targets =
+            Enum.map(permitted_ids, fn node_id ->
+              record =
+                Repo.insert!(%Record{
+                  execution_group_id: group.id,
+                  integration_id: integration_id,
+                  node_id: node_id,
+                  artifact: artifact,
+                  outcome: "running",
+                  streaming_state: "live",
+                  started_at: now
+                })
+
+              %{execution_id: record.id, node_id: node_id}
+            end)
+
+          {:ok, audit_pending} =
+            Audit.write_pending(principal, "execution.submit",
+              target_kind: "execution_group",
+              target_id: group.id,
+              params: %{
                 integration_id: integration_id,
-                node_id: node_id,
-                artifact: artifact,
-                outcome: "running",
-                streaming_state: "live",
-                started_at: now
-              })
+                node_ids: permitted_ids,
+                denied_node_ids: denied_ids
+              }
+            )
 
-            %{execution_id: record.id, node_id: node_id}
-          end)
+          {group, run_targets, audit_pending}
+        end)
 
-        {:ok, audit_pending} =
-          Audit.write_pending(principal, "execution.submit",
-            target_kind: "execution_group",
-            target_id: group.id,
-            params: %{integration_id: integration_id, node_ids: node_ids}
-          )
+      case result do
+        {:ok, {group, run_targets, audit_pending}} ->
+          case Supervisor.start_stream(%{
+                 runner_module: runner_module,
+                 integration_id: integration_id,
+                 artifact: artifact,
+                 group_id: group.id,
+                 targets: run_targets,
+                 timeout: timeout
+               }) do
+            {:ok, _pid} ->
+              Audit.finalize(audit_pending, :success)
+              {:ok, group.id}
 
-        {group, targets, audit_pending}
-      end)
+            {:error, reason} ->
+              Audit.finalize(audit_pending, :failure)
+              {:error, reason}
+          end
 
-    case result do
-      {:ok, {group, targets, audit_pending}} ->
-        case Supervisor.start_stream(%{
-               runner_module: runner_module,
-               integration_id: integration_id,
-               artifact: artifact,
-               group_id: group.id,
-               targets: targets,
-               timeout: timeout
-             }) do
-          {:ok, _pid} ->
-            Audit.finalize(audit_pending, :success)
-            {:ok, group.id}
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
 
-          {:error, reason} ->
-            Audit.finalize(audit_pending, :failure)
-            {:error, reason}
-        end
+  defp rbac_partition(principal, params, integration_id, artifact, node_ids) do
+    case Map.get(params, :permission_action) do
+      nil ->
+        {node_ids, []}
 
-      {:error, _} = err ->
-        err
+      action ->
+        resolved =
+          get_in(params, [:targets, :resolved]) ||
+            Enum.map(node_ids, fn id -> %{id: id} end)
+
+        context = %RBACContext{
+          integration_id: integration_id,
+          resolved_targets: resolved,
+          artifact: artifact
+        }
+
+        {permitted, denied} = RBAC.partition(principal, action, context)
+        {Enum.map(permitted, & &1.id), Enum.map(denied, & &1.id)}
     end
   end
 

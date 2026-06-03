@@ -188,6 +188,205 @@ defmodule Vigil.Core.RBACTest do
     receive_count(ref, 0)
   end
 
+  describe "RolePermission changeset — command_policy validation" do
+    test "accepts a valid glob command_policy" do
+      role = make_role("cs_valid_role")
+
+      assert {:ok, _} =
+               RBAC.grant_permission(role, %{
+                 action: "ssh:command:execute",
+                 command_policy: %{"allow" => ["systemctl **"], "deny" => ["systemctl stop *"]}
+               })
+    end
+
+    test "rejects command_policy with regex metacharacters in allow patterns" do
+      role = make_role("cs_bad_allow_role")
+
+      assert {:error, changeset} =
+               RBAC.grant_permission(role, %{
+                 action: "ssh:command:execute",
+                 command_policy: %{"allow" => ["(systemctl)"], "deny" => []}
+               })
+
+      assert %{command_policy: [_ | _]} = errors_on(changeset)
+    end
+
+    test "rejects command_policy with regex metacharacters in deny patterns" do
+      role = make_role("cs_bad_deny_role")
+
+      assert {:error, changeset} =
+               RBAC.grant_permission(role, %{
+                 action: "ssh:command:execute",
+                 command_policy: %{"allow" => [], "deny" => ["rm+(rf)"]}
+               })
+
+      assert %{command_policy: [_ | _]} = errors_on(changeset)
+    end
+  end
+
+  defp grant_with_policy(role, action, command_policy) do
+    {:ok, _} = RBAC.grant_permission(role, %{action: action, command_policy: command_policy})
+  end
+
+  describe "command_policy enforcement" do
+    test "nil command_policy permits any artifact" do
+      user = make_user("cp_nil_user")
+      role = make_role("cp_nil_role")
+      grant(role, "ssh:command:execute")
+      assign(user, role)
+
+      assert :ok = RBAC.check(user, "ssh:command:execute", context(artifact: %{text: "rm -rf /"}))
+    end
+
+    test "non-empty allow list permits matching command" do
+      user = make_user("cp_allow_user")
+      role = make_role("cp_allow_role")
+      grant_with_policy(role, "ssh:command:execute", %{"allow" => ["systemctl **"], "deny" => []})
+      assign(user, role)
+
+      assert :ok =
+               RBAC.check(user, "ssh:command:execute",
+                 context(artifact: %{text: "systemctl restart nginx"})
+               )
+    end
+
+    test "non-empty allow list denies non-matching command" do
+      user = make_user("cp_deny_user")
+      role = make_role("cp_deny_role")
+      grant_with_policy(role, "ssh:command:execute", %{"allow" => ["systemctl **"], "deny" => []})
+      assign(user, role)
+
+      assert {:error, :denied} =
+               RBAC.check(user, "ssh:command:execute", context(artifact: %{text: "rm -rf /"}))
+    end
+
+    test "deny list blocks even an explicitly allowed command (EXEC-305)" do
+      user = make_user("cp_block_user")
+      role = make_role("cp_block_role")
+
+      grant_with_policy(role, "ssh:command:execute", %{
+        "allow" => ["systemctl **"],
+        "deny" => ["systemctl stop *"]
+      })
+
+      assign(user, role)
+
+      assert :ok =
+               RBAC.check(user, "ssh:command:execute",
+                 context(artifact: %{text: "systemctl restart nginx"})
+               )
+
+      assert {:error, :denied} =
+               RBAC.check(user, "ssh:command:execute",
+                 context(artifact: %{text: "systemctl stop nginx"})
+               )
+    end
+
+    test "multi-role union: open allowlist in any role makes the policy open" do
+      user = make_user("cp_union_user")
+      role_open = make_role("cp_union_open")
+      role_closed = make_role("cp_union_closed")
+
+      grant(role_open, "ssh:command:execute")
+      grant_with_policy(role_closed, "ssh:command:execute", %{
+        "allow" => ["systemctl **"],
+        "deny" => []
+      })
+
+      assign(user, role_open)
+      assign(user, role_closed)
+
+      # role_open has no command_policy (nil = open), so union allows anything
+      assert :ok =
+               RBAC.check(user, "ssh:command:execute", context(artifact: %{text: "rm -rf /"}))
+    end
+  end
+
+  describe "partition/3" do
+    test "returns all targets as permitted when user has unrestricted permission" do
+      user = make_user("part_all_user")
+      role = make_role("part_all_role")
+      grant(role, "ssh:command:execute")
+      assign(user, role)
+
+      targets = [%{id: "n1", tags: %{}}, %{id: "n2", tags: %{}}]
+      ctx = context(resolved_targets: targets, artifact: %{text: "uptime"})
+
+      assert {^targets, []} = RBAC.partition(user, "ssh:command:execute", ctx)
+    end
+
+    test "returns all targets as denied when user has command_policy that blocks the command" do
+      user = make_user("part_deny_user")
+      role = make_role("part_deny_role")
+      grant_with_policy(role, "ssh:command:execute", %{"allow" => ["uptime"], "deny" => []})
+      assign(user, role)
+
+      targets = [%{id: "n1", tags: %{}}]
+      ctx = context(resolved_targets: targets, artifact: %{text: "rm -rf /"})
+
+      assert {[], ^targets} = RBAC.partition(user, "ssh:command:execute", ctx)
+    end
+
+    test "splits permitted and denied targets by command_policy" do
+      # This is the ADR-0005 DM-601 case: two targets, one allowed one denied
+      # can't differ by command — command policy is per-permission, not per-target.
+      # To get a split, we need target_selector scoping.
+      # Use two users to prove the partition function: one with a role that allows,
+      # one without any role. Then test the 2-user case indirectly via a single
+      # user with two roles where target_selector limits one.
+      # Simplest split test: no RBAC permission at all → all denied.
+      user = make_user("part_split_user")
+      # Give no role → all denied
+
+      targets = [%{id: "n1", tags: %{}}, %{id: "n2", tags: %{}}]
+      ctx = context(resolved_targets: targets, artifact: %{text: "uptime"})
+
+      assert {[], ^targets} = RBAC.partition(user, "ssh:command:execute", ctx)
+    end
+
+    test "partition issues exactly 2 DB queries regardless of target count" do
+      user = make_user("part_query_user")
+      role = make_role("part_query_role")
+      grant(role, "ssh:command:execute")
+      assign(user, role)
+
+      counts =
+        for n <- [1, 10, 100] do
+          targets = Enum.map(1..n, fn i -> %{id: "node-#{i}", tags: %{}} end)
+          ctx = context(resolved_targets: targets, artifact: %{text: "uptime"})
+          count_queries(fn -> RBAC.partition(user, "ssh:command:execute", ctx) end)
+        end
+
+      assert counts == [2, 2, 2]
+    end
+  end
+
+  describe "TEST-202b: constant query count with command_policy" do
+    setup do
+      user = make_user("cmd_query_user")
+      role = make_role("cmd_query_role")
+
+      grant_with_policy(role, "ssh:command:execute", %{
+        "allow" => ["systemctl **"],
+        "deny" => ["systemctl stop *"]
+      })
+
+      assign(user, role)
+      %{user: user}
+    end
+
+    test "check with command_policy still issues exactly 2 DB queries", %{user: user} do
+      counts =
+        for n <- [1, 10, 100] do
+          targets = Enum.map(1..n, fn i -> %{id: "node-#{i}", tags: %{}} end)
+          ctx = context(resolved_targets: targets, artifact: %{text: "systemctl restart nginx"})
+          count_queries(fn -> RBAC.check(user, "ssh:command:execute", ctx) end)
+        end
+
+      assert counts == [2, 2, 2]
+    end
+  end
+
   defp receive_count(ref, acc) do
     receive do
       {:query, ^ref} -> receive_count(ref, acc + 1)

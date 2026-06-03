@@ -36,17 +36,21 @@ defmodule VigilWeb.Live.ExecutionSubmitLive do
 
     if errors == %{} do
       node_ids = String.split(node_ids_raw, ~r/[\n,\s]+/, trim: true)
-      principal = %{id: "anon"}
+      principal = socket.assigns.current_user
 
       submit_params = %{
         integration_id: integration_id,
         artifact: %{kind: :command, text: command},
-        targets: %{node_ids: node_ids}
+        targets: %{node_ids: node_ids},
+        permission_action: "ssh:command:execute"
       }
 
       case PluginExecutions.submit(principal, submit_params) do
         {:ok, group_id} ->
           {:noreply, push_navigate(socket, to: ~p"/executions/#{group_id}")}
+
+        {:error, :all_denied} ->
+          {:noreply, put_flash(socket, :error, "The command is not permitted by your role's command policy.")}
 
         {:error, reason} ->
           msg = if is_map(reason), do: Map.get(reason, :message, inspect(reason)), else: inspect(reason)
