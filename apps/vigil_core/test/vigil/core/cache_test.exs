@@ -1,11 +1,18 @@
 defmodule Vigil.Core.CacheTest do
   use ExUnit.Case, async: false
+  use ExUnitProperties
 
   alias Vigil.Core.Cache
+  alias Vigil.Core.Cache.Janitor
 
   setup_all do
     case Process.whereis(Vigil.Core.Cache.Server) do
       nil -> start_supervised!(Vigil.Core.Cache.Server)
+      _pid -> :ok
+    end
+
+    case Process.whereis(Janitor) do
+      nil -> start_supervised!(Janitor)
       _pid -> :ok
     end
 
@@ -132,6 +139,120 @@ defmodule Vigil.Core.CacheTest do
       assert Enum.all?(results, fn {:ok, e, _tag} -> e.data == [:coalesced_result] end)
       # Compute ran exactly once
       assert :counters.get(called, 1) == 1
+    end
+  end
+
+  describe "TEST-204 — cache keys are fully determined by {integration_id, capability, action, args}" do
+    property "any two calls with the same coordinates share the cached result" do
+      check all int_id <- string(:alphanumeric, min_length: 1),
+                cap <- member_of([:inventory, :facts, :reports]),
+                action <- member_of([:list_nodes, :get_facts]),
+                args <- map_of(string(:alphanumeric, min_length: 1), string(:alphanumeric, min_length: 1),
+                               max_length: 3) do
+        # Unique integration_id per iteration to avoid cross-iteration pollution
+        unique_id = "prop-#{int_id}-#{:erlang.unique_integer([:positive])}"
+        data = [%{node: unique_id}]
+
+        :ok = Cache.put(unique_id, cap, action, args, data, %{}, 60_000)
+
+        # Same coordinates → always a hit, regardless of any external "principal" data
+        assert {:ok, entry} = Cache.get(unique_id, cap, action, args)
+        assert entry.data == data
+      end
+    end
+
+    property "varying any key dimension yields a miss" do
+      check all int_id <- string(:alphanumeric, min_length: 3),
+                cap <- member_of([:inventory, :facts]),
+                action <- member_of([:list_nodes, :get_facts]),
+                args <- map_of(string(:alphanumeric, min_length: 1), string(:alphanumeric, min_length: 1),
+                               max_length: 2) do
+        unique_id = "prop-dim-#{int_id}-#{:erlang.unique_integer([:positive])}"
+        :ok = Cache.put(unique_id, cap, action, args, [:data], %{}, 60_000)
+
+        # Different integration → miss
+        assert :miss = Cache.get("other-#{unique_id}", cap, action, args)
+        # Different capability → miss
+        other_cap = if cap == :inventory, do: :facts, else: :inventory
+        assert :miss = Cache.get(unique_id, other_cap, action, args)
+        # Different args → miss
+        assert :miss = Cache.get(unique_id, cap, action, Map.put(args, "__sentinel__", "1"))
+      end
+    end
+  end
+
+  describe "EXS-006 — stale serving when source is unhealthy" do
+    test "fetch returns stale entry with :degraded marker when compute_fn fails and expired entry exists" do
+      id = uid()
+      # Populate cache with a fresh entry
+      Cache.put(id, :inventory, :list_nodes, %{}, [:good_data], %{plugin_id: "puppet"}, 1)
+      # Wait for TTL to expire (entry is now stale but still in ETS)
+      :timer.sleep(10)
+      assert :miss = Cache.get(id, :inventory, :list_nodes, %{})
+
+      # Source is unhealthy — compute_fn returns error
+      result = Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:error, :upstream_down} end)
+
+      assert {:ok, entry, :stale} = result
+      assert entry.data == [:good_data]
+      assert entry.source_health_at_store == :degraded
+    end
+
+    test "fetch returns error when compute_fn fails and no stale entry exists" do
+      id = uid()
+
+      result = Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:error, :upstream_down} end)
+
+      assert {:error, :upstream_down} = result
+    end
+
+    test "fetch returns fresh data when compute_fn succeeds, ignoring any stale entry" do
+      id = uid()
+      Cache.put(id, :inventory, :list_nodes, %{}, [:old_data], %{}, 1)
+      :timer.sleep(10)
+
+      result = Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:ok, [:fresh_data]} end)
+
+      assert {:ok, entry, :miss} = result
+      assert entry.data == [:fresh_data]
+      assert entry.source_health_at_store == :healthy
+    end
+  end
+
+  describe "Janitor — TTL sweeper" do
+    test "deletes entries past hard retention window" do
+      id = uid()
+      # TTL = 1 ms; wait for expiry; hard_retention = 5 ms → sweep should evict
+      Cache.put(id, :inventory, :list_nodes, %{}, [:stale_data], %{}, 1)
+      :timer.sleep(10)
+      # Confirm TTL-expired (stale but still in ETS)
+      assert :miss = Cache.get(id, :inventory, :list_nodes, %{})
+
+      Janitor.sweep(5)
+
+      # After sweep: entry should be gone from ETS
+      refute match?([_], :ets.lookup(:vigil_cache, {id, :inventory, :list_nodes, :erlang.phash2(%{})}))
+    end
+
+    test "does not delete entries within hard retention window" do
+      id = uid()
+      # TTL = 1 ms (expired); hard retention = 10 minutes → NOT deleted by sweep
+      Cache.put(id, :inventory, :list_nodes, %{}, [:stale_data], %{}, 1)
+      :timer.sleep(10)
+
+      Janitor.sweep(600_000)
+
+      # Entry must still be present (stale but available for EXS-006)
+      assert match?([_], :ets.lookup(:vigil_cache, {id, :inventory, :list_nodes, :erlang.phash2(%{})}))
+    end
+
+    test "does not delete live entries" do
+      id = uid()
+      Cache.put(id, :inventory, :list_nodes, %{}, [:live_data], %{}, 60_000)
+
+      Janitor.sweep(5)
+
+      assert {:ok, _} = Cache.get(id, :inventory, :list_nodes, %{})
     end
   end
 

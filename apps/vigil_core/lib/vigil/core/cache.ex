@@ -31,6 +31,10 @@ defmodule Vigil.Core.Cache do
   @spec invalidate_integration(integration_id()) :: :ok
   defdelegate invalidate_integration(integration_id), to: Server
 
+  @doc "Trigger an immediate sweep with the given hard-retention window (ms). Synchronous. Primarily for tests."
+  @spec sweep(non_neg_integer()) :: :ok
+  defdelegate sweep(hard_retention_ms), to: Vigil.Core.Cache.Janitor
+
   @doc """
   Check-or-compute with single-flight coalescing.
   On miss, `compute_fn` is called exactly once regardless of concurrent callers
