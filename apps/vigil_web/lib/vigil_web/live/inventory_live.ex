@@ -17,7 +17,8 @@ defmodule VigilWeb.InventoryLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    inventory = Inventory.list_inventory()
+    principal = socket.assigns.current_user
+    inventory = Inventory.list_inventory(principal)
 
     {:ok,
      socket

@@ -43,6 +43,8 @@ defmodule Vigil.Plugin.DispatcherTest do
     assert {:ok, %Result{}} = Dispatcher.call(integration_id, :inventory, :list_nodes, %{})
 
     :ok = DynamicSupervisor.terminate_child(Vigil.Integrations.Supervisor, pid)
+    # Evict the cached result so the registry-miss is observable.
+    Vigil.Core.Cache.invalidate(integration_id, :inventory)
 
     # The Registry deregisters on the process :DOWN, which it handles
     # asynchronously — so the entry may briefly outlive terminate_child/2. Poll
@@ -53,6 +55,43 @@ defmodule Vigil.Plugin.DispatcherTest do
                Dispatcher.call(integration_id, :inventory, :list_nodes, %{})
              )
            end)
+  end
+
+  describe "cache wiring" do
+    test "cache hit returns cached data without calling the plugin", %{integration_id: id} do
+      # Prime the cache with a known result.
+      cached_nodes = [%{name: "cached-node", attributes: %{}, targetable?: true}]
+
+      cached_result = %Result{
+        data: cached_nodes,
+        source: %Vigil.Plugin.Source{plugin_id: "noop", integration_id: id},
+        fetched_at: ~U[2000-01-01 00:00:00Z],
+        freshness: :cached
+      }
+
+      Vigil.Core.Cache.put(id, :inventory, :list_nodes, %{}, cached_result, %{}, 300_000)
+
+      assert {:ok, %Result{data: ^cached_nodes, freshness: :cached}} =
+               Dispatcher.call(id, :inventory, :list_nodes, %{})
+    end
+
+    test "cache miss calls plugin, result is served with :live freshness then :cached", %{integration_id: id} do
+      # First call — cache miss — hits the NoOp plugin.
+      assert {:ok, %Result{freshness: :live} = result} =
+               Dispatcher.call(id, :inventory, :list_nodes, %{})
+
+      assert result.source.integration_id == id
+
+      # Second call — cache hit — returns the stored entry with :cached freshness.
+      assert {:ok, %Result{freshness: :cached}} =
+               Dispatcher.call(id, :inventory, :list_nodes, %{})
+    end
+
+    test "error from plugin is not cached — retry hits the plugin again" do
+      # Unknown integration → error; should not pollute cache.
+      assert {:error, %Error{}} = Dispatcher.call("unknown-for-cache-test", :inventory, :list_nodes, %{})
+      assert {:error, %Error{}} = Dispatcher.call("unknown-for-cache-test", :inventory, :list_nodes, %{})
+    end
   end
 
   defp eventually(fun, retries \\ 50) do

@@ -75,10 +75,13 @@ defmodule Vigil.Integrations.Manager do
 
   def handle_info({:integration_disabled, id}, state) do
     new_state = stop_integration(id, state)
+    Vigil.Core.Cache.invalidate_integration(id)
     {:noreply, new_state}
   end
 
   def handle_info({:integration_config_updated, id, new_config}, state) do
+    Vigil.Core.Cache.invalidate_integration(id)
+
     case Registry.lookup(Vigil.Plugin.Registry, {:config_server, id}) do
       [{pid, _}] ->
         GenServer.call(pid, {:reload, new_config})
