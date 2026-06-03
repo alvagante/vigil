@@ -57,6 +57,33 @@ defmodule Vigil.Plugin.DispatcherTest do
            end)
   end
 
+  describe "EXS-006 — stale serving when source is unhealthy" do
+    test "returns stale result with :stale freshness when upstream fails and expired entry exists" do
+      id = "stale-" <> (System.unique_integer([:positive]) |> Integer.to_string())
+
+      stale_result = %Result{
+        data: [%{name: "stale-node"}],
+        source: %Vigil.Plugin.Source{plugin_id: "noop", integration_id: id},
+        fetched_at: DateTime.utc_now(),
+        freshness: :live
+      }
+
+      Vigil.Core.Cache.put(id, :inventory, :list_nodes, %{}, stale_result, %{plugin_id: "noop"}, 1)
+      :timer.sleep(10)
+
+      # No plugin registered → upstream fails → stale entry served
+      assert {:ok, %Result{freshness: :stale, data: data}} =
+               Dispatcher.call(id, :inventory, :list_nodes, %{})
+
+      assert data == [%{name: "stale-node"}]
+    end
+
+    test "returns error when upstream fails and no stale entry exists" do
+      assert {:error, %Error{category: :configuration}} =
+               Dispatcher.call("no-such-integration", :inventory, :list_nodes, %{})
+    end
+  end
+
   describe "cache wiring" do
     test "cache hit returns cached data without calling the plugin", %{integration_id: id} do
       # Prime the cache with a known result.
