@@ -16,7 +16,8 @@ defmodule Vigil.Core.Application do
       Vigil.Core.Supervisor,
       Vigil.Core.Execution.Supervisor,
       Vigil.Core.RBAC.PermissionCache,
-      Vigil.Core.Cache.Server
+      Vigil.Core.Cache.Server,
+      Vigil.Core.Cache.Janitor
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one)

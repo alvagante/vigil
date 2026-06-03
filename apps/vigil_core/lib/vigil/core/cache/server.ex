@@ -32,6 +32,16 @@ defmodule Vigil.Core.Cache.Server do
     end
   end
 
+  # Returns expired-but-present entries for EXS-006 stale serving.
+  defp get_stale(integration_id, capability, action, args) do
+    key = cache_key(integration_id, capability, action, args)
+
+    case :ets.lookup(@table, key) do
+      [{^key, entry}] -> {:ok, entry}
+      [] -> :miss
+    end
+  end
+
   # --- Write API (goes through GenServer) ---
 
   def put(integration_id, capability, action, args, data, source_attribution, ttl_ms) do
@@ -110,26 +120,47 @@ defmodule Vigil.Core.Cache.Server do
     end
   end
 
+  def sweep(hard_retention_ms) do
+    GenServer.call(__MODULE__, {:sweep, hard_retention_ms})
+  end
+
   @impl true
-  def handle_cast({:compute_done, key, _integration_id, _capability, _action, _args, ttl_ms, result, leader_from}, state) do
+  def handle_call({:sweep, hard_retention_ms}, _from, state) do
+    cutoff = DateTime.add(DateTime.utc_now(), -hard_retention_ms, :millisecond)
+
+    keys_to_delete =
+      :ets.foldl(
+        fn {key, entry}, acc ->
+          if DateTime.compare(entry.expires_at, cutoff) == :lt, do: [key | acc], else: acc
+        end,
+        [],
+        @table
+      )
+
+    Enum.each(keys_to_delete, &:ets.delete(@table, &1))
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_cast({:compute_done, key, integration_id, capability, action, args, ttl_ms, result, leader_from}, state) do
     {waiters, in_flight} = Map.pop(state.in_flight, key, [])
 
-    reply =
+    tagged_reply =
       case result do
         {:ok, data} ->
           entry = Entry.new(data, %{}, ttl_ms)
           :ets.insert(@table, {key, entry})
-          {:ok, entry}
+          {:ok, entry, :miss}
 
         {:error, _} = err ->
-          err
-      end
+          # EXS-006: serve stale entry with :degraded marker if available.
+          case get_stale(integration_id, capability, action, args) do
+            {:ok, stale_entry} ->
+              {:ok, %{stale_entry | source_health_at_store: :degraded}, :stale}
 
-    # Tag the reply as :miss — this was freshly computed.
-    tagged_reply =
-      case reply do
-        {:ok, entry} -> {:ok, entry, :miss}
-        other -> other
+            :miss ->
+              err
+          end
       end
 
     GenServer.reply(leader_from, tagged_reply)
