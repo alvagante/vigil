@@ -438,10 +438,315 @@ defmodule Vigil.Integrations.BoltTest do
   end
 
   # ──────────────────────────────────────────────
-  # Tracer 10: full conformance suite
+  # Tracer 10: list_tasks/2 (BOLT-202)
+  # ──────────────────────────────────────────────
+
+  describe "list_tasks/2 (BOLT-202)" do
+    test "returns empty list when bolt reports no tasks", %{id: id, config: config, agent: agent} do
+      FakeCLI.set_task_list(agent, %{"tasks" => [], "modulepath" => []})
+      start_instance(id, config)
+      {:ok, %{data: tasks}} = Bolt.list_tasks(id, %{})
+      assert tasks == []
+    end
+
+    test "maps bolt tasks to BoltTask structs with name and description",
+         %{id: id, config: config, agent: agent} do
+      FakeCLI.set_task_list(agent, %{
+        "tasks" => [["package", "Manage packages"], ["service", nil]],
+        "modulepath" => []
+      })
+
+      start_instance(id, config)
+      {:ok, %{data: tasks}} = Bolt.list_tasks(id, %{})
+
+      assert length(tasks) == 2
+      pkg = Enum.find(tasks, &(&1.name == "package"))
+      svc = Enum.find(tasks, &(&1.name == "service"))
+      assert pkg.description == "Manage packages"
+      assert svc.description == nil
+    end
+
+    test "passes correct args to bolt CLI (task show --format json)",
+         %{id: id, config: config, agent: agent} do
+      FakeCLI.set_task_list(agent, %{"tasks" => [], "modulepath" => []})
+      start_instance(id, config)
+      Bolt.list_tasks(id, %{})
+      args = FakeCLI.last_args(agent)
+      assert args == ["task", "show", "--project", "/tmp/bolt_test_project", "--format", "json"]
+    end
+
+    test "returns structured error when bolt executable is missing",
+         %{id: id, config: config, agent: agent} do
+      FakeCLI.set_error(agent, :not_found)
+      start_instance(id, config)
+      {:error, %{category: :configuration}} = Bolt.list_tasks(id, %{})
+    end
+
+    test "returns {:error, :not_found} for unknown integration_id" do
+      {:error, %{category: :configuration}} = Bolt.list_tasks("no-such-id", %{})
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 11: show_task/3 (BOLT-202 parameter metadata)
+  # ──────────────────────────────────────────────
+
+  describe "show_task/3 (BOLT-202)" do
+    setup %{agent: agent} do
+      FakeCLI.set_task_detail(agent, %{
+        "name" => "package",
+        "metadata" => %{
+          "description" => "Manage packages",
+          "parameters" => %{
+            "action" => %{
+              "description" => "The operation to perform.",
+              "type" => "Enum[install, status, uninstall, upgrade]"
+            },
+            "name" => %{
+              "description" => "The package name.",
+              "type" => "String[1]"
+            },
+            "version" => %{
+              "description" => "Optional version.",
+              "type" => "Optional[String[1]]"
+            }
+          }
+        }
+      })
+
+      :ok
+    end
+
+    test "returns BoltTask with parameters", %{id: id, config: config} do
+      start_instance(id, config)
+      {:ok, %{data: task}} = Bolt.show_task(id, "package", %{})
+      assert task.name == "package"
+      assert task.description == "Manage packages"
+      assert length(task.parameters) == 3
+    end
+
+    test "required flag derives from Optional wrapper", %{id: id, config: config} do
+      start_instance(id, config)
+      {:ok, %{data: task}} = Bolt.show_task(id, "package", %{})
+      action = Enum.find(task.parameters, &(&1.name == "action"))
+      version = Enum.find(task.parameters, &(&1.name == "version"))
+      assert action.required == true
+      assert version.required == false
+    end
+
+    test "passes task name as third CLI arg", %{id: id, config: config, agent: agent} do
+      start_instance(id, config)
+      Bolt.show_task(id, "package", %{})
+      args = FakeCLI.last_args(agent)
+      assert args == ["task", "show", "package", "--project", "/tmp/bolt_test_project", "--format", "json"]
+    end
+
+    test "returns {:error, :not_found} for unknown integration_id" do
+      {:error, %{category: :configuration}} = Bolt.show_task("no-such-id", "package", %{})
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 12: list_plans/2 + show_plan/3 (BOLT-204)
+  # ──────────────────────────────────────────────
+
+  describe "list_plans/2 (BOLT-204)" do
+    test "returns empty list when bolt reports no plans", %{id: id, config: config, agent: agent} do
+      FakeCLI.set_plan_list(agent, %{"plans" => [], "modulepath" => []})
+      start_instance(id, config)
+      {:ok, %{data: plans}} = Bolt.list_plans(id, %{})
+      assert plans == []
+    end
+
+    test "maps bolt plans to BoltPlan structs", %{id: id, config: config, agent: agent} do
+      FakeCLI.set_plan_list(agent, %{
+        "plans" => [["reboot", "Reboots targets"], ["facts", nil]],
+        "modulepath" => []
+      })
+
+      start_instance(id, config)
+      {:ok, %{data: plans}} = Bolt.list_plans(id, %{})
+      assert length(plans) == 2
+      reboot = Enum.find(plans, &(&1.name == "reboot"))
+      assert reboot.description == "Reboots targets"
+    end
+
+    test "passes correct args to bolt CLI (plan show --format json)",
+         %{id: id, config: config, agent: agent} do
+      FakeCLI.set_plan_list(agent, %{"plans" => [], "modulepath" => []})
+      start_instance(id, config)
+      Bolt.list_plans(id, %{})
+      args = FakeCLI.last_args(agent)
+      assert args == ["plan", "show", "--project", "/tmp/bolt_test_project", "--format", "json"]
+    end
+
+    test "returns {:error, :not_found} for unknown integration_id" do
+      {:error, %{category: :configuration}} = Bolt.list_plans("no-such-id", %{})
+    end
+  end
+
+  describe "show_plan/3 (BOLT-204)" do
+    setup %{agent: agent} do
+      FakeCLI.set_plan_detail(agent, %{
+        "name" => "reboot",
+        "description" => "Reboots targets and waits for them to be available again.",
+        "parameters" => %{
+          "targets" => %{
+            "type" => "TargetSpec",
+            "sensitive" => false,
+            "description" => "Targets to reboot."
+          },
+          "message" => %{
+            "type" => "Optional[String]",
+            "sensitive" => false,
+            "default_value" => "undef",
+            "description" => "Message to log."
+          },
+          "reboot_delay" => %{
+            "type" => "Integer[1]",
+            "sensitive" => false,
+            "default_value" => "1",
+            "description" => "Seconds before rebooting."
+          }
+        }
+      })
+
+      :ok
+    end
+
+    test "returns BoltPlan with parameters", %{id: id, config: config} do
+      start_instance(id, config)
+      {:ok, %{data: plan}} = Bolt.show_plan(id, "reboot", %{})
+      assert plan.name == "reboot"
+      assert String.contains?(plan.description, "Reboots")
+      assert length(plan.parameters) == 3
+    end
+
+    test "required flag derives from Optional wrapper in plan params",
+         %{id: id, config: config} do
+      start_instance(id, config)
+      {:ok, %{data: plan}} = Bolt.show_plan(id, "reboot", %{})
+      targets_param = Enum.find(plan.parameters, &(&1.name == "targets"))
+      message_param = Enum.find(plan.parameters, &(&1.name == "message"))
+      assert targets_param.required == true
+      assert message_param.required == false
+    end
+
+    test "sensitive flag is preserved from plan param metadata",
+         %{id: id, config: config} do
+      start_instance(id, config)
+      {:ok, %{data: plan}} = Bolt.show_plan(id, "reboot", %{})
+      delay_param = Enum.find(plan.parameters, &(&1.name == "reboot_delay"))
+      assert delay_param.sensitive == false
+    end
+
+    test "passes plan name as third CLI arg", %{id: id, config: config, agent: agent} do
+      start_instance(id, config)
+      Bolt.show_plan(id, "reboot", %{})
+      args = FakeCLI.last_args(agent)
+      assert args == ["plan", "show", "reboot", "--project", "/tmp/bolt_test_project", "--format", "json"]
+    end
+
+    test "returns {:error, :not_found} for unknown integration_id" do
+      {:error, %{category: :configuration}} = Bolt.show_plan("no-such-id", "reboot", %{})
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 13: task execution via Runner (BOLT-202)
+  # ──────────────────────────────────────────────
+
+  describe "Runner task execution (BOLT-202)" do
+    test "executes bolt task run and delivers results per target",
+         %{id: id, config: config, agent: agent} do
+      FakeCLI.set_task_run_result(agent, %{
+        "items" => [
+          %{"target" => "web-01", "action" => "task", "object" => "package",
+            "status" => "success", "value" => %{"status" => "installed", "version" => "1.2.3"}}
+        ]
+      })
+
+      start_instance(id, config)
+      stream_pid = self()
+
+      target = %{execution_id: "exec-1", node_id: "web-01"}
+      artifact = %{kind: :task, name: "package", params: %{"action" => "install", "name" => "nginx"}}
+
+      {:ok, _pid} = Bolt.start(id, artifact, [target], %{stream_pid: stream_pid})
+
+      assert_receive {:runner_chunk, "exec-1", :text, text}, 2000
+      assert String.contains?(text, "installed") or String.contains?(text, "1.2.3")
+      assert_receive {:runner_target_done, "exec-1", %{exit_status: 0}}, 2000
+      assert_receive {:runner_done, %{}}, 2000
+    end
+
+    test "passes task name and JSON params to CLI",
+         %{id: id, config: config, agent: agent} do
+      FakeCLI.set_task_run_result(agent, %{"items" => []})
+      start_instance(id, config)
+
+      target = %{execution_id: "exec-1", node_id: "web-01"}
+      artifact = %{kind: :task, name: "package", params: %{"action" => "status", "name" => "nginx"}}
+
+      {:ok, pid} = Bolt.start(id, artifact, [target], %{stream_pid: self()})
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 3000
+
+      args = FakeCLI.last_args(agent)
+      assert Enum.take(args, 3) == ["task", "run", "package"]
+      assert "--params" in args
+      params_json = Enum.at(args, Enum.find_index(args, &(&1 == "--params")) + 1)
+      decoded = Jason.decode!(params_json)
+      assert decoded["action"] == "status"
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 14: plan execution via Runner (BOLT-204)
+  # ──────────────────────────────────────────────
+
+  describe "Runner plan execution (BOLT-204)" do
+    test "executes bolt plan run and delivers result to synthetic __plan__ target",
+         %{id: id, config: config, agent: agent} do
+      FakeCLI.set_plan_run_result(agent, %{"targets_ran" => 3, "status" => "success"})
+      start_instance(id, config)
+
+      target = %{execution_id: "plan-exec-1", node_id: "__plan__"}
+      artifact = %{kind: :plan, name: "reboot", params: %{"targets" => "web-01,web-02,web-03"}}
+
+      {:ok, _pid} = Bolt.start(id, artifact, [target], %{stream_pid: self()})
+
+      assert_receive {:runner_chunk, "plan-exec-1", :text, text}, 2000
+      assert String.contains?(text, "success") or String.contains?(text, "targets_ran")
+      assert_receive {:runner_target_done, "plan-exec-1", %{exit_status: 0}}, 2000
+      assert_receive {:runner_done, %{}}, 2000
+    end
+
+    test "passes plan name and JSON params to CLI (no --targets flag)",
+         %{id: id, config: config, agent: agent} do
+      FakeCLI.set_plan_run_result(agent, %{"result" => "ok"})
+      start_instance(id, config)
+
+      target = %{execution_id: "plan-exec-2", node_id: "__plan__"}
+      artifact = %{kind: :plan, name: "facts", params: %{"targets" => "db-01"}}
+
+      {:ok, pid} = Bolt.start(id, artifact, [target], %{stream_pid: self()})
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 3000
+
+      args = FakeCLI.last_args(agent)
+      assert Enum.take(args, 3) == ["plan", "run", "facts"]
+      assert "--params" in args
+      refute "--targets" in args
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 15: full conformance suite
   # ──────────────────────────────────────────────
 
   describe "full conformance suite" do
+
     test "the Bolt plugin passes all conformance checks", %{id: id, config: config} do
       start_instance(id, config)
       report = Conformance.run(Bolt, config)

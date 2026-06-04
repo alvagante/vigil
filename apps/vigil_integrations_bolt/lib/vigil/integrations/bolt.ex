@@ -18,6 +18,8 @@ defmodule Vigil.Integrations.Bolt do
   @behaviour Vigil.Plugin.Execution.Runner
 
   alias Vigil.Integrations.Bolt.{Runner, Server}
+  alias Vigil.Integrations.Bolt.Plan, as: BoltPlan
+  alias Vigil.Integrations.Bolt.Task, as: BoltTask
   alias Vigil.Plugin.{Error, Node, Permission, Result, Schema, Source}
 
   @plugin_id "bolt"
@@ -206,6 +208,154 @@ defmodule Vigil.Integrations.Bolt do
     end
   end
 
+  ## Task discovery
+
+  @doc "Lists available Bolt tasks with name and description (BOLT-202)."
+  def list_tasks(integration_id, _opts) do
+    with {:ok, config} <- Server.get_config(integration_id) do
+      bolt_exe = Map.get(config, "bolt_executable", @default_bolt_exe)
+      project_dir = Map.get(config, "project_dir", ".")
+      cli_mod = cli_module(config)
+      opts = cli_opts(config)
+
+      args = ["task", "show", "--project", project_dir, "--format", "json"]
+
+      case cli_mod.run(bolt_exe, args, opts) do
+        {:ok, %{exit_status: 0, stdout: json}} ->
+          case parse_task_list(json, integration_id) do
+            {:ok, tasks} -> {:ok, ok_result(integration_id, tasks)}
+            {:error, reason} -> {:error, parse_error(reason)}
+          end
+
+        {:ok, %{exit_status: status}} ->
+          {:error, bolt_error("bolt task show exited #{status}")}
+
+        {:error, :not_found} ->
+          {:error,
+           %Error{
+             category: :configuration,
+             message: "bolt executable not found — check `bolt_executable` config",
+             retriable?: false
+           }}
+
+        {:error, reason} ->
+          {:error, transient_error(reason)}
+      end
+    else
+      {:error, :not_found} -> {:error, no_instance_error(integration_id)}
+    end
+  end
+
+  @doc "Returns a single Bolt task with full parameter metadata (BOLT-202)."
+  def show_task(integration_id, task_name, _opts) do
+    with {:ok, config} <- Server.get_config(integration_id) do
+      bolt_exe = Map.get(config, "bolt_executable", @default_bolt_exe)
+      project_dir = Map.get(config, "project_dir", ".")
+      cli_mod = cli_module(config)
+      opts = cli_opts(config)
+
+      args = ["task", "show", task_name, "--project", project_dir, "--format", "json"]
+
+      case cli_mod.run(bolt_exe, args, opts) do
+        {:ok, %{exit_status: 0, stdout: json}} ->
+          case parse_task_detail(json) do
+            {:ok, task} -> {:ok, ok_result(integration_id, task)}
+            {:error, reason} -> {:error, parse_error(reason)}
+          end
+
+        {:ok, %{exit_status: status}} ->
+          {:error, bolt_error("bolt task show #{task_name} exited #{status}")}
+
+        {:error, :not_found} ->
+          {:error,
+           %Error{
+             category: :configuration,
+             message: "bolt executable not found — check `bolt_executable` config",
+             retriable?: false
+           }}
+
+        {:error, reason} ->
+          {:error, transient_error(reason)}
+      end
+    else
+      {:error, :not_found} -> {:error, no_instance_error(integration_id)}
+    end
+  end
+
+  ## Plan discovery
+
+  @doc "Lists available Bolt plans with name and description (BOLT-204)."
+  def list_plans(integration_id, _opts) do
+    with {:ok, config} <- Server.get_config(integration_id) do
+      bolt_exe = Map.get(config, "bolt_executable", @default_bolt_exe)
+      project_dir = Map.get(config, "project_dir", ".")
+      cli_mod = cli_module(config)
+      opts = cli_opts(config)
+
+      args = ["plan", "show", "--project", project_dir, "--format", "json"]
+
+      case cli_mod.run(bolt_exe, args, opts) do
+        {:ok, %{exit_status: 0, stdout: json}} ->
+          case parse_plan_list(json) do
+            {:ok, plans} -> {:ok, ok_result(integration_id, plans)}
+            {:error, reason} -> {:error, parse_error(reason)}
+          end
+
+        {:ok, %{exit_status: status}} ->
+          {:error, bolt_error("bolt plan show exited #{status}")}
+
+        {:error, :not_found} ->
+          {:error,
+           %Error{
+             category: :configuration,
+             message: "bolt executable not found — check `bolt_executable` config",
+             retriable?: false
+           }}
+
+        {:error, reason} ->
+          {:error, transient_error(reason)}
+      end
+    else
+      {:error, :not_found} -> {:error, no_instance_error(integration_id)}
+    end
+  end
+
+  @doc "Returns a single Bolt plan with full parameter metadata (BOLT-204)."
+  def show_plan(integration_id, plan_name, _opts) do
+    with {:ok, config} <- Server.get_config(integration_id) do
+      bolt_exe = Map.get(config, "bolt_executable", @default_bolt_exe)
+      project_dir = Map.get(config, "project_dir", ".")
+      cli_mod = cli_module(config)
+      opts = cli_opts(config)
+
+      args = ["plan", "show", plan_name, "--project", project_dir, "--format", "json"]
+
+      case cli_mod.run(bolt_exe, args, opts) do
+        {:ok, %{exit_status: 0, stdout: json}} ->
+          case parse_plan_detail(json) do
+            {:ok, plan} -> {:ok, ok_result(integration_id, plan)}
+            {:error, reason} -> {:error, parse_error(reason)}
+          end
+
+        {:ok, %{exit_status: status}} ->
+          {:error, bolt_error("bolt plan show #{plan_name} exited #{status}")}
+
+        {:error, :not_found} ->
+          {:error,
+           %Error{
+             category: :configuration,
+             message: "bolt executable not found — check `bolt_executable` config",
+             retriable?: false
+           }}
+
+        {:error, reason} ->
+          {:error, transient_error(reason)}
+      end
+    else
+      {:error, :not_found} -> {:error, no_instance_error(integration_id)}
+    end
+  end
+
   ## Vigil.Plugin.Execution.Runner
 
   @impl Vigil.Plugin.Execution.Runner
@@ -219,6 +369,106 @@ defmodule Vigil.Integrations.Bolt do
   end
 
   ## Internal
+
+  defp parse_plan_list(json) do
+    case Jason.decode(json) do
+      {:ok, %{"plans" => plans}} ->
+        result =
+          Enum.map(plans, fn
+            [name, description] -> %BoltPlan{name: name, description: description}
+            [name] -> %BoltPlan{name: name, description: nil}
+          end)
+
+        {:ok, result}
+
+      {:ok, _unexpected} ->
+        {:error, "unexpected bolt plan show output shape"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_plan_detail(json) do
+    case Jason.decode(json) do
+      {:ok, %{"name" => name} = raw} ->
+        description = raw["description"]
+
+        params =
+          (raw["parameters"] || %{})
+          |> Enum.map(fn {param_name, meta} ->
+            type = meta["type"] || ""
+            required = not String.starts_with?(type, "Optional[")
+
+            %{
+              name: param_name,
+              type: type,
+              required: required,
+              sensitive: meta["sensitive"] || false,
+              description: meta["description"]
+            }
+          end)
+          |> Enum.sort_by(& &1.name)
+
+        {:ok, %BoltPlan{name: name, description: description, parameters: params}}
+
+      {:ok, _unexpected} ->
+        {:error, "unexpected bolt plan show <name> output shape"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_task_detail(json) do
+    case Jason.decode(json) do
+      {:ok, %{"name" => name} = raw} ->
+        description = get_in(raw, ["metadata", "description"])
+
+        params =
+          (get_in(raw, ["metadata", "parameters"]) || %{})
+          |> Enum.map(fn {param_name, meta} ->
+            type = meta["type"] || ""
+            required = not String.starts_with?(type, "Optional[")
+
+            %{
+              name: param_name,
+              type: type,
+              required: required,
+              sensitive: false,
+              description: meta["description"]
+            }
+          end)
+          |> Enum.sort_by(& &1.name)
+
+        {:ok, %BoltTask{name: name, description: description, parameters: params}}
+
+      {:ok, _unexpected} ->
+        {:error, "unexpected bolt task show <name> output shape"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_task_list(json, _integration_id) do
+    case Jason.decode(json) do
+      {:ok, %{"tasks" => tasks}} ->
+        result =
+          Enum.map(tasks, fn
+            [name, description] -> %BoltTask{name: name, description: description}
+            [name] -> %BoltTask{name: name, description: nil}
+          end)
+
+        {:ok, result}
+
+      {:ok, _unexpected} ->
+        {:error, "unexpected bolt task show output shape"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp parse_inventory(json, integration_id) do
     case Jason.decode(json) do

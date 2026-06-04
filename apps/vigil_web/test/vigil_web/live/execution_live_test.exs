@@ -30,15 +30,17 @@ defmodule VigilWeb.ExecutionLiveTest do
   end
 
   defp insert_group(attrs \\ %{}) do
-    Repo.insert!(%Group{
-      integration_id: "test-int",
-      artifact: %{kind: "command", text: "echo hello"},
-      intended_targets: %{node_ids: ["web-01"]},
-      dispatched_count: 1,
-      submitted_by: "anon",
-      submitted_at: DateTime.utc_now()
-    }
-    |> Map.merge(attrs))
+    Repo.insert!(
+      %Group{
+        integration_id: "test-int",
+        artifact: %{kind: "command", text: "echo hello"},
+        intended_targets: %{node_ids: ["web-01"]},
+        dispatched_count: 1,
+        submitted_by: "anon",
+        submitted_at: DateTime.utc_now()
+      }
+      |> Map.merge(attrs)
+    )
   end
 
   ## History page
@@ -113,6 +115,41 @@ defmodule VigilWeb.ExecutionLiveTest do
              |> render_submit()
 
     assert path =~ "/executions/"
+  end
+
+  ## Submit form — task/plan dynamic forms (BOLT-203)
+
+  test "form renders a kind selector with command, task, plan options", %{conn: conn} do
+    {:ok, _view, html} = live(conn, ~p"/executions/new")
+    assert html =~ ~r/value="command"/
+    assert html =~ ~r/value="task"/
+    assert html =~ ~r/value="plan"/
+  end
+
+  test "selecting kind=task shows a task name selector and hides command input",
+       %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/executions/new")
+
+    html =
+      view
+      |> element("#execution-form")
+      |> render_change(%{"execution" => %{"kind" => "task"}})
+
+    assert html =~ "task_name"
+    refute html =~ ~r/name="execution\[command\]"/
+  end
+
+  test "selecting kind=plan shows a plan name selector and hides command input",
+       %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/executions/new")
+
+    html =
+      view
+      |> element("#execution-form")
+      |> render_change(%{"execution" => %{"kind" => "plan"}})
+
+    assert html =~ "plan_name"
+    refute html =~ ~r/name="execution\[command\]"/
   end
 
   ## Execution group detail (streaming view)

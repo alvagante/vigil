@@ -316,6 +316,48 @@ defmodule Vigil.Core.RBACTest do
     end
   end
 
+  describe "command_policy enforcement for task and plan artifacts (RBAC-102)" do
+    test "allows task when task name matches command_policy allow glob" do
+      user = make_user("task_allow_user")
+      role = make_role("task_allow_role")
+      grant_with_policy(role, "bolt:task:execute", %{"allow" => ["package**"], "deny" => []})
+      assign(user, role)
+
+      artifact = %{kind: :task, name: "package"}
+      assert :ok = RBAC.check(user, "bolt:task:execute", context(artifact: artifact))
+    end
+
+    test "denies task when task name does not match command_policy allow glob" do
+      user = make_user("task_deny_user")
+      role = make_role("task_deny_role")
+      grant_with_policy(role, "bolt:task:execute", %{"allow" => ["package**"], "deny" => []})
+      assign(user, role)
+
+      artifact = %{kind: :task, name: "service"}
+      assert {:error, :denied} = RBAC.check(user, "bolt:task:execute", context(artifact: artifact))
+    end
+
+    test "allows plan when plan name matches command_policy allow glob" do
+      user = make_user("plan_allow_user")
+      role = make_role("plan_allow_role")
+      grant_with_policy(role, "bolt:plan:execute", %{"allow" => ["reboot*"], "deny" => []})
+      assign(user, role)
+
+      artifact = %{kind: :plan, name: "reboot"}
+      assert :ok = RBAC.check(user, "bolt:plan:execute", context(artifact: artifact))
+    end
+
+    test "deny list blocks plan even when allow matches" do
+      user = make_user("plan_block_user")
+      role = make_role("plan_block_role")
+      grant_with_policy(role, "bolt:plan:execute", %{"allow" => ["*"], "deny" => ["reboot"]})
+      assign(user, role)
+
+      artifact = %{kind: :plan, name: "reboot"}
+      assert {:error, :denied} = RBAC.check(user, "bolt:plan:execute", context(artifact: artifact))
+    end
+  end
+
   describe "partition/3" do
     test "returns all targets as permitted when user has unrestricted permission" do
       user = make_user("part_all_user")

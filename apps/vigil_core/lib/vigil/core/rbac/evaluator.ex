@@ -74,6 +74,8 @@ defmodule Vigil.Core.RBAC.Evaluator do
   defp artifact_to_command_string(nil), do: ""
   defp artifact_to_command_string(%{text: t}) when is_binary(t), do: t
   defp artifact_to_command_string(%{"text" => t}) when is_binary(t), do: t
+  defp artifact_to_command_string(%{kind: k, name: n}) when k in [:task, :plan] and is_binary(n), do: n
+  defp artifact_to_command_string(%{"kind" => k, "name" => n}) when k in ["task", "plan"] and is_binary(n), do: n
   defp artifact_to_command_string(_), do: ""
 
   defp integration_matches?(%{integration_id: nil}, _), do: true
