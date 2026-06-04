@@ -11,14 +11,31 @@ defmodule Vigil.Core.Seeds do
 
   @roles [
     %{name: "administrator", description: "Full access to all capabilities.", built_in: true},
-    %{name: "operator", description: "Read all; execute on integrations; no destructive provisioning.", built_in: true},
+    %{
+      name: "operator",
+      description: "Read all; execute on integrations; no destructive provisioning.",
+      built_in: true
+    },
     %{name: "read-only", description: "Read-only on everything.", built_in: true},
-    %{name: "auditor", description: "Read-only on journal, audit trail, and integration health.", built_in: true},
-    %{name: "mcp-service", description: "Read-only MCP tools for AI service accounts.", built_in: true}
+    %{
+      name: "auditor",
+      description: "Read-only on journal, audit trail, and integration health.",
+      built_in: true
+    },
+    %{
+      name: "mcp-service",
+      description: "Read-only MCP tools for AI service accounts.",
+      built_in: true
+    }
   ]
 
   @built_in_permissions %{
-    "operator" => ["inventory:node:read", "integration:health:read", "execution:read", "execution:submit"],
+    "operator" => [
+      "inventory:node:read",
+      "integration:health:read",
+      "execution:read",
+      "execution:submit"
+    ],
     "read-only" => ["inventory:node:read", "integration:health:read", "execution:read"],
     "auditor" => ["integration:health:read", "audit:entry:read"],
     "mcp-service" => ["inventory:node:read"]
@@ -39,7 +56,11 @@ defmodule Vigil.Core.Seeds do
   defp upsert_roles do
     Enum.reduce(@roles, %{}, fn attrs, acc ->
       role =
-        case Repo.one(from r in Role, where: r.name == ^attrs.name and r.tenant_id == ^@default_tenant_id) do
+        case Repo.one(
+               from(r in Role,
+                 where: r.name == ^attrs.name and r.tenant_id == ^@default_tenant_id
+               )
+             ) do
           nil ->
             %Role{}
             |> Role.changeset(attrs)
@@ -54,10 +75,16 @@ defmodule Vigil.Core.Seeds do
   end
 
   defp upsert_break_glass_admin do
-    case Repo.one(from u in User, where: u.is_break_glass == true and u.tenant_id == ^@default_tenant_id) do
+    case Repo.one(
+           from(u in User, where: u.is_break_glass == true and u.tenant_id == ^@default_tenant_id)
+         ) do
       nil ->
         password = generate_password()
-        IO.puts("\n[vigil seeds] Break-glass admin created. Username: admin  Password: #{password}")
+
+        IO.puts(
+          "\n[vigil seeds] Break-glass admin created. Username: admin  Password: #{password}"
+        )
+
         IO.puts("[vigil seeds] Rotate this password before going to production.\n")
 
         %User{tenant_id: @default_tenant_id, is_break_glass: true}
@@ -75,8 +102,9 @@ defmodule Vigil.Core.Seeds do
         action <- actions do
       already_granted =
         Repo.exists?(
-          from rp in RolePermission,
+          from(rp in RolePermission,
             where: rp.role_id == ^role.id and rp.action == ^action and is_nil(rp.integration_id)
+          )
         )
 
       unless already_granted do

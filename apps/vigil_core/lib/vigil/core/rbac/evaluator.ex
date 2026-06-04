@@ -81,6 +81,7 @@ defmodule Vigil.Core.RBAC.Evaluator do
 
   # Pure function — no DB. O(targets) but zero queries.
   defp target_matches?(%{target_selector: nil}, _), do: true
+
   defp target_matches?(%{target_selector: sel}, targets) when is_list(targets) do
     Enum.all?(targets, &node_in_selector?(&1, sel))
   end

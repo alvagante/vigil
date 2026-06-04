@@ -15,7 +15,9 @@ defmodule Vigil.Plugin.NoOp.Server do
 
   @impl GenServer
   def init({integration_id, config}) do
-    {:ok, _} = Registry.register(Vigil.Plugin.Registry, {:integration, integration_id}, Vigil.Plugin.NoOp)
+    {:ok, _} =
+      Registry.register(Vigil.Plugin.Registry, {:integration, integration_id}, Vigil.Plugin.NoOp)
+
     {:ok, %{integration_id: integration_id, config: config}}
   end
 end

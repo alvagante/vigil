@@ -35,11 +35,12 @@ defmodule Vigil.Core.Accounts.APITokens do
     token_hash = hash(encoded)
 
     query =
-      from t in APIToken,
+      from(t in APIToken,
         join: u in User,
         on: u.id == t.user_id,
         where: t.token_hash == ^token_hash and is_nil(t.revoked_at),
         preload: [user: u]
+      )
 
     case Repo.one(query) do
       nil ->
@@ -58,9 +59,10 @@ defmodule Vigil.Core.Accounts.APITokens do
   @doc "Returns all non-revoked tokens for a user, ordered by insertion time."
   def list_for_user(%User{id: user_id}) do
     Repo.all(
-      from t in APIToken,
+      from(t in APIToken,
         where: t.user_id == ^user_id and is_nil(t.revoked_at),
         order_by: [desc: t.inserted_at]
+      )
     )
   end
 

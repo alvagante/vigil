@@ -8,14 +8,14 @@ defmodule Vigil.Core.RBAC.RolePermission do
   @foreign_key_type :binary_id
 
   schema "role_permissions" do
-    belongs_to :role, Vigil.Core.RBAC.Role
+    belongs_to(:role, Vigil.Core.RBAC.Role)
 
-    field :action, :string
-    field :integration_id, :binary_id
-    field :target_selector, :map
-    field :command_policy, :map
+    field(:action, :string)
+    field(:integration_id, :binary_id)
+    field(:target_selector, :map)
+    field(:command_policy, :map)
 
-    field :inserted_at, :utc_datetime_usec
+    field(:inserted_at, :utc_datetime_usec)
   end
 
   def changeset(rp, attrs) do
@@ -43,7 +43,11 @@ defmodule Vigil.Core.RBAC.RolePermission do
         if invalid == [] do
           changeset
         else
-          add_error(changeset, :command_policy, "contains invalid glob patterns: #{inspect(invalid)}")
+          add_error(
+            changeset,
+            :command_policy,
+            "contains invalid glob patterns: #{inspect(invalid)}"
+          )
         end
 
       _ ->

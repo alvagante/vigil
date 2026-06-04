@@ -28,7 +28,15 @@ defmodule Vigil.Integrations.SSH do
   require Logger
 
   alias Vigil.Plugin.{Error, Node, Permission, Result, Schema, Source}
-  alias Vigil.Integrations.SSH.{ConfigParser, ConnectionPool, FactParser, Runner, Server, Transport}
+
+  alias Vigil.Integrations.SSH.{
+    ConfigParser,
+    ConnectionPool,
+    FactParser,
+    Runner,
+    Server,
+    Transport
+  }
 
   @plugin_id "ssh"
   @default_config_file "~/.ssh/config"

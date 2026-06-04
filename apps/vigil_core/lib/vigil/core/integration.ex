@@ -16,13 +16,13 @@ defmodule Vigil.Core.Integration do
   @foreign_key_type :binary_id
 
   schema "integrations" do
-    field :tenant_id, :binary_id, default: @default_tenant
-    field :plugin_id, :string
-    field :name, :string
-    field :config, :map, default: %{}
-    field :enabled, :boolean, default: true
-    field :contract_version, :string
-    field :health, :map, default: %{}
+    field(:tenant_id, :binary_id, default: @default_tenant)
+    field(:plugin_id, :string)
+    field(:name, :string)
+    field(:config, :map, default: %{})
+    field(:enabled, :boolean, default: true)
+    field(:contract_version, :string)
+    field(:health, :map, default: %{})
 
     timestamps(type: :utc_datetime)
   end
@@ -35,7 +35,9 @@ defmodule Vigil.Core.Integration do
     |> cast(attrs, @required ++ @optional)
     |> validate_required(@required)
     |> validate_length(:name, min: 1, max: 255)
-    |> validate_format(:name, ~r/\A[a-z0-9_-]+\z/, message: "must be lowercase letters, digits, hyphens, or underscores")
+    |> validate_format(:name, ~r/\A[a-z0-9_-]+\z/,
+      message: "must be lowercase letters, digits, hyphens, or underscores"
+    )
     |> unique_constraint(:name, name: :integrations_tenant_id_name_index)
   end
 

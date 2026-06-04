@@ -67,7 +67,10 @@ defmodule Vigil.Plugin.Conformance.LifecycleContract do
       not function_exported?(plugin, :health_check, 1) ->
         Check.fail(name, "#{inspect(plugin)} does not implement Vigil.Plugin.Health")
 
-      match?({:ok, status} when status in [:healthy, :degraded, :unhealthy], plugin.health_check("conformance")) ->
+      match?(
+        {:ok, status} when status in [:healthy, :degraded, :unhealthy],
+        plugin.health_check("conformance")
+      ) ->
         Check.pass(name)
 
       true ->
@@ -76,7 +79,9 @@ defmodule Vigil.Plugin.Conformance.LifecycleContract do
   end
 
   defp shape(name, fun) do
-    if fun.(), do: Check.pass(name), else: Check.fail(name, "#{name} returned an unexpected shape")
+    if fun.(),
+      do: Check.pass(name),
+      else: Check.fail(name, "#{name} returned an unexpected shape")
   rescue
     e -> Check.fail(name, "#{name} raised #{Exception.message(e)}")
   end

@@ -20,7 +20,9 @@ defmodule Vigil.Core.IntegrationConfigTest do
     end
 
     test "returns error changeset when name is missing" do
-      assert {:error, changeset} = IntegrationConfig.create(%{plugin_id: "noop", contract_version: "1.0.0"})
+      assert {:error, changeset} =
+               IntegrationConfig.create(%{plugin_id: "noop", contract_version: "1.0.0"})
+
       assert %{name: [_ | _]} = errors_on(changeset)
     end
 
@@ -40,7 +42,12 @@ defmodule Vigil.Core.IntegrationConfigTest do
   describe "list_all/0 and list_enabled/0" do
     setup do
       {:ok, enabled} = IntegrationConfig.create(@valid_attrs)
-      {:ok, disabled} = IntegrationConfig.create(Map.merge(@valid_attrs, %{name: "noop-disabled", enabled: false}))
+
+      {:ok, disabled} =
+        IntegrationConfig.create(
+          Map.merge(@valid_attrs, %{name: "noop-disabled", enabled: false})
+        )
+
       %{enabled: enabled, disabled: disabled}
     end
 
@@ -58,7 +65,11 @@ defmodule Vigil.Core.IntegrationConfigTest do
 
   describe "enable/1 and disable/1" do
     setup do
-      {:ok, integration} = IntegrationConfig.create(Map.merge(@valid_attrs, %{name: "noop-lifecycle", enabled: false}))
+      {:ok, integration} =
+        IntegrationConfig.create(
+          Map.merge(@valid_attrs, %{name: "noop-lifecycle", enabled: false})
+        )
+
       %{integration: integration}
     end
 

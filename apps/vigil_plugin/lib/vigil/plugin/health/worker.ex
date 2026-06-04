@@ -77,7 +77,9 @@ defmodule Vigil.Plugin.Health.Worker do
     # Payload includes integration_id so subscribers can route without topic metadata.
     # Design §2.6 lists `{:health, status, capabilities, diagnostic}` — we extend to
     # `{:health, integration_id, status, capabilities, diagnostic}` for LiveView routing.
-    payload = {:health, state.integration_id, status, state.plugin_module.capabilities(), diagnostic}
+    payload =
+      {:health, state.integration_id, status, state.plugin_module.capabilities(), diagnostic}
+
     topic = "integration_health:#{state.integration_id}"
 
     Phoenix.PubSub.broadcast(@pubsub_name, topic, payload)
@@ -96,5 +98,4 @@ defmodule Vigil.Plugin.Health.Worker do
       _ -> :ok
     end
   end
-
 end

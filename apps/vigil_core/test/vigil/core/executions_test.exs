@@ -63,7 +63,7 @@ defmodule Vigil.Core.ExecutionsTest do
                })
 
       import Ecto.Query
-      assert [] = Repo.all(from r in Record, where: r.node_id == "host1")
+      assert [] = Repo.all(from(r in Record, where: r.node_id == "host1"))
     end
 
     test "all-denied submission writes a denied audit entry with full target list" do
@@ -81,8 +81,9 @@ defmodule Vigil.Core.ExecutionsTest do
 
       entry =
         Repo.one!(
-          from e in AuditEntry,
+          from(e in AuditEntry,
             where: e.action == "execution.submit" and e.actor_user_id == ^user.id
+          )
         )
 
       assert entry.result == "denied"
@@ -112,10 +113,13 @@ defmodule Vigil.Core.ExecutionsTest do
     test "command_policy denial blocks execution and writes denied audit entry" do
       user = make_user("exec_cmd_deny_user")
       role = make_role("exec_cmd_deny_role")
-      {:ok, _} = RBAC.grant_permission(role, %{
-        action: "ssh:command:execute",
-        command_policy: %{"allow" => ["uptime"], "deny" => []}
-      })
+
+      {:ok, _} =
+        RBAC.grant_permission(role, %{
+          action: "ssh:command:execute",
+          command_policy: %{"allow" => ["uptime"], "deny" => []}
+        })
+
       assign_role(user, role)
 
       assert {:error, :all_denied} =
@@ -128,17 +132,20 @@ defmodule Vigil.Core.ExecutionsTest do
                })
 
       import Ecto.Query
-      assert [] = Repo.all(from r in Record, where: r.node_id == "host-cmd")
+      assert [] = Repo.all(from(r in Record, where: r.node_id == "host-cmd"))
     end
 
     test "partial dispatch: permitted targets get records, denied targets get only audit (ADR-0005 DM-601)" do
       # Set up: user has permission with target_selector on env=prod only
       user = make_user("exec_partial_user")
       role = make_role("exec_partial_role")
-      {:ok, _} = RBAC.grant_permission(role, %{
-        action: "ssh:command:execute",
-        target_selector: %{"tags" => %{"env" => ["prod"]}}
-      })
+
+      {:ok, _} =
+        RBAC.grant_permission(role, %{
+          action: "ssh:command:execute",
+          target_selector: %{"tags" => %{"env" => ["prod"]}}
+        })
+
       assign_role(user, role)
 
       prod_node = %{id: "prod-host", tags: %{"env" => "prod"}}
@@ -155,7 +162,7 @@ defmodule Vigil.Core.ExecutionsTest do
                })
 
       import Ecto.Query
-      records = Repo.all(from r in Record, where: r.execution_group_id == ^group_id)
+      records = Repo.all(from(r in Record, where: r.execution_group_id == ^group_id))
       record_node_ids = Enum.map(records, & &1.node_id)
 
       assert "prod-host" in record_node_ids
@@ -258,10 +265,13 @@ defmodule Vigil.Core.ExecutionsTest do
           timeout: %{wall_clock_ms: 150}
         })
 
-      eventually(fn ->
-        record = Repo.get_by(Record, execution_group_id: group_id)
-        record && record.outcome == "timed_out"
-      end, 800)
+      eventually(
+        fn ->
+          record = Repo.get_by(Record, execution_group_id: group_id)
+          record && record.outcome == "timed_out"
+        end,
+        800
+      )
 
       record = Repo.get_by!(Record, execution_group_id: group_id)
       assert record.outcome == "timed_out"
@@ -279,10 +289,13 @@ defmodule Vigil.Core.ExecutionsTest do
           timeout: %{idle_ms: 150}
         })
 
-      eventually(fn ->
-        record = Repo.get_by(Record, execution_group_id: group_id)
-        record && record.outcome == "timed_out"
-      end, 800)
+      eventually(
+        fn ->
+          record = Repo.get_by(Record, execution_group_id: group_id)
+          record && record.outcome == "timed_out"
+        end,
+        800
+      )
 
       record = Repo.get_by!(Record, execution_group_id: group_id)
       assert record.outcome == "timed_out"
@@ -329,8 +342,9 @@ defmodule Vigil.Core.ExecutionsTest do
 
       entry =
         Repo.one!(
-          from e in AuditEntry,
+          from(e in AuditEntry,
             where: e.action == "execution.submit" and e.actor_label == "audit-user-1"
+          )
         )
 
       assert entry.result == "success"
@@ -387,7 +401,7 @@ defmodule Vigil.Core.ExecutionsTest do
         })
 
       eventually(fn ->
-        records = Repo.all(from r in Record, where: r.execution_group_id == ^orig_group_id)
+        records = Repo.all(from(r in Record, where: r.execution_group_id == ^orig_group_id))
         length(records) == 2 && Enum.all?(records, &(&1.outcome != "running"))
       end)
 
@@ -396,7 +410,7 @@ defmodule Vigil.Core.ExecutionsTest do
       refute new_group_id == orig_group_id
 
       eventually(fn ->
-        records = Repo.all(from r in Record, where: r.execution_group_id == ^new_group_id)
+        records = Repo.all(from(r in Record, where: r.execution_group_id == ^new_group_id))
         length(records) == 2 && Enum.all?(records, &(&1.outcome != "running"))
       end)
 

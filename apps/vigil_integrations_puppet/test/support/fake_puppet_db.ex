@@ -24,8 +24,14 @@ defmodule Vigil.Integrations.Puppet.FakePuppetDB do
   end
 
   def set_nodes(agent, nodes), do: Agent.update(agent, &Map.put(&1, :nodes, nodes))
+
   def set_facts(agent, certname, facts),
-    do: Agent.update(agent, &Map.update(&1, :facts, %{certname => facts}, fn f -> Map.put(f, certname, facts) end))
+    do:
+      Agent.update(
+        agent,
+        &Map.update(&1, :facts, %{certname => facts}, fn f -> Map.put(f, certname, facts) end)
+      )
+
   def set_error(agent, reason), do: Agent.update(agent, &Map.put(&1, :error, reason))
   def clear_error(agent), do: Agent.update(agent, &Map.put(&1, :error, nil))
 

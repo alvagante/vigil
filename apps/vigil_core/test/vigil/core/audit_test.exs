@@ -13,7 +13,9 @@ defmodule Vigil.Core.AuditTest do
   end
 
   defp user_fixture do
-    {:ok, user} = Accounts.register_user(%{username: unique_username(), password: "password_audit!"})
+    {:ok, user} =
+      Accounts.register_user(%{username: unique_username(), password: "password_audit!"})
+
     user
   end
 

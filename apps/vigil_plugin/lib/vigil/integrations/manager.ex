@@ -53,7 +53,10 @@ defmodule Vigil.Integrations.Manager do
       {:noreply, new_state}
     rescue
       e ->
-        Logger.warning("[Manager] could not load integrations from database: #{Exception.message(e)}")
+        Logger.warning(
+          "[Manager] could not load integrations from database: #{Exception.message(e)}"
+        )
+
         {:noreply, state}
     end
   end
@@ -137,7 +140,10 @@ defmodule Vigil.Integrations.Manager do
         pid
 
       {:error, reason} ->
-        Logger.warning("[Manager] health worker start failed for #{integration_id}: #{inspect(reason)}")
+        Logger.warning(
+          "[Manager] health worker start failed for #{integration_id}: #{inspect(reason)}"
+        )
+
         nil
     end
   end
