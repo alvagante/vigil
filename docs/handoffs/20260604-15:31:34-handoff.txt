@@ -1,0 +1,113 @@
+Handoff — 2026-06-04 15:31:34
+Branch: devel
+Last completed issue: #13 (Bolt plugin — inventory + command execution)
+Commit: 5aacf08  feat(bolt): Bolt plugin — inventory + command execution closes #13
+Next: #14 (Bolt tasks + plans, auto-generated forms, per-task/per-plan RBAC)
+
+═══════════════════════════════════════════════════════
+SESSION SUMMARY
+═══════════════════════════════════════════════════════
+
+This session completed and committed issue #13. The main work (bolt.ex,
+cli/port.ex, runner.ex, server.ex, fake_cli, bolt_test.exs) was done in a
+prior session that ran out of context; this session:
+
+1. Fixed three pre-commit gaps identified by the advisor:
+   a. Renamed sentinel tests from "kills the OS process" →
+      "kills the directly-spawned process" — `kill -9 <pid>` only kills the
+      direct child; grandchildren (e.g. SSH subprocesses) are not reaped.
+      Process-tree reaping deferred to #15.
+   b. Added `assert "--detail" in FakeCLI.last_args(agent)` regression test
+      to bolt_test.exs (the --detail flag was missing in a prior version and
+      caused target names to be bare strings instead of full config objects).
+   c. Corrected the BOLT-401 RBAC claim in the handoff: the Dispatcher has NO
+      permission check — it is pure cache+dispatch; module doc says "RBAC
+      target-scope filtering is applied by callers after the returned result."
+      The `operational_permissions/0` list in bolt.ex is informational metadata
+      only, not wired to a runtime gate.
+
+2. Verified all 35 bolt tests pass (29 integration + 6 CLI.Port timeout tests).
+   Full umbrella: 0 failures.
+
+3. Committed as 5aacf08.
+
+See the detailed design notes in:
+  docs/handoffs/20260604-15:10:58-handoff.txt
+
+═══════════════════════════════════════════════════════
+KNOWN UNSTAGED CHANGES — NOT PART OF #13
+═══════════════════════════════════════════════════════
+
+~60 files from vigil_core, vigil_plugin, vigil_web, vigil_integrations_puppet,
+vigil_integrations_ssh, and config/runtime.exs have formatting-only changes
+(adding parentheses to Ecto `from` macros: `from u in` → `from(u in)`).
+These were applied by mix format in earlier sessions but never committed.
+They are NOT blocking — tests pass with them unstaged.
+
+Recommend committing as a clean-up before starting #14:
+  git add -A && git commit -m "chore: mix format"
+But confirm first that no functional changes are hiding in those diffs.
+
+═══════════════════════════════════════════════════════
+ISSUE #14 — NEXT WORK
+═══════════════════════════════════════════════════════
+
+Full text: gh issue view 14 --repo alvagante/vigil
+
+Title: Bolt plugin: tasks + plans, auto-generated parameter forms,
+       per-task/per-plan RBAC
+
+Acceptance criteria:
+  [ ] Tasks discoverable with full parameter metadata (BOLT-TASK-*)
+  [ ] Auto-generated parameter forms in ExecutionSubmitLive: string, integer,
+      boolean, enum widgets with validation (Design §9)
+  [ ] Plans execute with parameter input (BOLT-PLAN-*)
+  [ ] Per-task and per-plan RBAC denies disallowed invocations at dispatch
+      and audits the denial (RBAC-201..*; analogue to #9's per-command RBAC)
+  [ ] Denied invocations produce no execution record (ADR-0005)
+  [ ] Permission denial paths covered by tests (TEST-002)
+
+References: PRD BOLT-TASK-*, BOLT-PLAN-*, RBAC-201..*; Design §6, §9; ADR-0005
+
+── Key context for #14 ─────────────────────────────────
+
+1. Task discovery
+   bolt task show --format json  (lists tasks with parameter metadata)
+   bolt task show <task-name> --format json  (individual task detail)
+   Same CLI seam as #13: FakeCLI will need a new dispatch branch for
+   List.starts_with?(args, ["task"]).
+
+2. Plan execution
+   bolt plan run <plan-name> --params '{"key":"val"}' --format json
+   Output shape differs from `bolt command run` — plans produce a single
+   "result" object, not an "items" list. Verify against live Bolt docs.
+
+3. RBAC for tasks/plans
+   The #9 commit (af7ad54) implemented per-command RBAC on the REST API path.
+   Issue #14 needs the analogous predicates for tasks and plans.
+   The Dispatcher (vigil_plugin/lib/vigil/plugin/dispatcher.ex) has NO
+   permission check — callers handle RBAC. The wiring point is the REST
+   controller or the LiveView submit handler, depending on where #9 put it.
+   Check apps/vigil_web/lib/vigil_web/controllers/api/execution_controller.ex
+   and ExecutionSubmitLive for the existing per-command pattern.
+
+4. ExecutionSubmitLive auto-forms
+   Design §9 describes widget types. The existing ExecutionSubmitLive
+   (apps/vigil_web/lib/vigil_web/live/execution_submit_live.ex) was wired
+   for SSH command input in #7. Extend it to render parameter forms based on
+   bolt task metadata.
+
+5. Process-tree reaping (NOT in #14 scope)
+   Deferred to #15 per handoff. Do not reopen in #14.
+
+── Suggested starting point ────────────────────────────
+
+  gh issue view 14 --repo alvagante/vigil
+  Read: apps/vigil_web/lib/vigil_web/live/execution_submit_live.ex
+  Read: apps/vigil_web/lib/vigil_web/controllers/api/execution_controller.ex
+  Read: docs/specs/design/  (§6 execution, §9 LiveView UI)
+  Read: docs/specs/prd/  (BOLT-TASK-*, BOLT-PLAN-*, RBAC-201..*)
+
+── Suggested skills ────────────────────────────────────
+
+  /tdd  — vertical slice TDD is the established workflow for this repo

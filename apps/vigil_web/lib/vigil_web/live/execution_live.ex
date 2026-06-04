@@ -93,7 +93,9 @@ defmodule VigilWeb.Live.ExecutionLive do
         {:noreply, push_navigate(socket, to: ~p"/executions/#{new_group_id}")}
 
       {:error, reason} ->
-        msg = if is_map(reason), do: Map.get(reason, :message, inspect(reason)), else: inspect(reason)
+        msg =
+          if is_map(reason), do: Map.get(reason, :message, inspect(reason)), else: inspect(reason)
+
         {:noreply, put_flash(socket, :error, "Re-run failed: #{msg}")}
     end
   end
@@ -132,11 +134,10 @@ defmodule VigilWeb.Live.ExecutionLive do
           <div>
             <div class="font-mono text-sm">
               <span class="text-base-content/60">Command:</span>
-              <%= artifact_text(@group.artifact) %>
+              {artifact_text(@group.artifact)}
             </div>
             <div class="text-xs text-base-content/50 mt-1">
-              Submitted <%= DateTime.to_string(@group.submitted_at) %>
-              &middot; <%= @group.dispatched_count %> target(s)
+              Submitted {DateTime.to_string(@group.submitted_at)} &middot; {@group.dispatched_count} target(s)
             </div>
           </div>
           <button
@@ -151,8 +152,10 @@ defmodule VigilWeb.Live.ExecutionLive do
 
       <div :for={{exec, chunks} <- Map.values(@exec_outputs)} class="mb-4">
         <div class="font-semibold text-sm mb-1">{exec.node_id}</div>
-        <pre class="bg-base-300 rounded p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap"
-             id={"stream-#{exec.id}"}>
+        <pre
+          class="bg-base-300 rounded p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap"
+          id={"stream-#{exec.id}"}
+        >
           <span :for={chunk <- chunks}>{chunk}</span>
           <span :if={chunks == [] && exec.outcome == "running"} class="text-base-content/40">
             Waiting for output…

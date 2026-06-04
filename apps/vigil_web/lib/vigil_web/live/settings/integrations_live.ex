@@ -57,7 +57,9 @@ defmodule VigilWeb.Live.Settings.IntegrationsLive do
   end
 
   def handle_event("save", %{"integration" => params}, socket) do
-    plugin_id = params["plugin_id"] || (socket.assigns.editing && socket.assigns.editing.plugin_id)
+    plugin_id =
+      params["plugin_id"] || (socket.assigns.editing && socket.assigns.editing.plugin_id)
+
     config_params = params["config"] || %{}
 
     with {:ok, schema} <- resolve_schema(plugin_id, socket.assigns.available_plugins),
@@ -142,7 +144,7 @@ defmodule VigilWeb.Live.Settings.IntegrationsLive do
       <%= if @form_mode do %>
         <div class="card bg-base-200 p-6 mb-6">
           <h2 class="text-xl font-semibold mb-4">
-            <%= if @form_mode == :new, do: "New Integration", else: "Edit Integration" %>
+            {if @form_mode == :new, do: "New Integration", else: "Edit Integration"}
           </h2>
           <form phx-submit="save">
             <div class="form-control mb-4">
@@ -151,7 +153,7 @@ defmodule VigilWeb.Live.Settings.IntegrationsLive do
                 <select name="integration[plugin_id]" class="select select-bordered">
                   <option value="">— select plugin —</option>
                   <%= for {plugin_id, _mod} <- @available_plugins do %>
-                    <option value={plugin_id}><%= plugin_id %></option>
+                    <option value={plugin_id}>{plugin_id}</option>
                   <% end %>
                 </select>
               <% else %>
@@ -181,7 +183,7 @@ defmodule VigilWeb.Live.Settings.IntegrationsLive do
               <div class="alert alert-error mb-4">
                 <ul>
                   <%= for {field, msg} <- @validation_errors do %>
-                    <li><strong><%= field %></strong>: <%= msg %></li>
+                    <li><strong><%= field %></strong>: {msg}</li>
                   <% end %>
                 </ul>
               </div>
@@ -207,12 +209,12 @@ defmodule VigilWeb.Live.Settings.IntegrationsLive do
         <tbody>
           <%= for integration <- @integrations do %>
             <tr>
-              <td><%= integration.name %></td>
-              <td><%= integration.plugin_id %></td>
-              <td><%= integration.contract_version %></td>
+              <td>{integration.name}</td>
+              <td>{integration.plugin_id}</td>
+              <td>{integration.contract_version}</td>
               <td>
                 <span class={"badge #{if integration.enabled, do: "badge-success", else: "badge-ghost"}"}>
-                  <%= if integration.enabled, do: "enabled", else: "disabled" %>
+                  {if integration.enabled, do: "enabled", else: "disabled"}
                 </span>
               </td>
               <td class="flex gap-2">
@@ -220,11 +222,19 @@ defmodule VigilWeb.Live.Settings.IntegrationsLive do
                   Edit
                 </button>
                 <%= if integration.enabled do %>
-                  <button phx-click="disable" phx-value-id={integration.id} class="btn btn-xs btn-warning">
+                  <button
+                    phx-click="disable"
+                    phx-value-id={integration.id}
+                    class="btn btn-xs btn-warning"
+                  >
                     Disable
                   </button>
                 <% else %>
-                  <button phx-click="enable" phx-value-id={integration.id} class="btn btn-xs btn-success">
+                  <button
+                    phx-click="enable"
+                    phx-value-id={integration.id}
+                    class="btn btn-xs btn-success"
+                  >
                     Enable
                   </button>
                 <% end %>

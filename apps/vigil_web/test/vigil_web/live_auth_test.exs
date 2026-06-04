@@ -19,7 +19,8 @@ defmodule VigilWeb.LiveAuthTest do
     test "assigns user from a valid session token" do
       user = user_fixture()
 
-      {:cont, socket} = LiveAuth.on_mount(:mount_current_user, %{}, session_for(user), bare_socket())
+      {:cont, socket} =
+        LiveAuth.on_mount(:mount_current_user, %{}, session_for(user), bare_socket())
 
       assert socket.assigns[:current_user].id == user.id
     end
@@ -32,7 +33,12 @@ defmodule VigilWeb.LiveAuthTest do
 
     test "assigns nil for an invalid token" do
       {:cont, socket} =
-        LiveAuth.on_mount(:mount_current_user, %{}, %{@session_key => "not_a_real_token"}, bare_socket())
+        LiveAuth.on_mount(
+          :mount_current_user,
+          %{},
+          %{@session_key => "not_a_real_token"},
+          bare_socket()
+        )
 
       assert socket.assigns[:current_user] == nil
     end
@@ -117,7 +123,12 @@ defmodule VigilWeb.LiveAuthTest do
 
     test "returns {:halt, socket} redirecting to log_in when unauthenticated" do
       assert {:halt, socket} =
-               LiveAuth.on_mount({:require_permission, "ssh:command:execute"}, %{}, %{}, bare_socket())
+               LiveAuth.on_mount(
+                 {:require_permission, "ssh:command:execute"},
+                 %{},
+                 %{},
+                 bare_socket()
+               )
 
       assert socket.redirected == {:redirect, %{status: 302, to: "/users/log_in"}}
     end

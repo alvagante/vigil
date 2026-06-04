@@ -23,7 +23,10 @@ defmodule VigilWeb.UserSessionControllerTest do
   describe "POST /users/log_in" do
     test "valid credentials create session and redirect to /", %{conn: conn} do
       user = user_fixture()
-      conn = post(conn, ~p"/users/log_in", %{username: user.username, password: "test_password_123!"})
+
+      conn =
+        post(conn, ~p"/users/log_in", %{username: user.username, password: "test_password_123!"})
+
       assert redirected_to(conn) == ~p"/"
       assert get_session(conn, "_vigil_token")
     end
@@ -32,18 +35,24 @@ defmodule VigilWeb.UserSessionControllerTest do
       user = user_fixture()
       post(conn, ~p"/users/log_in", %{username: user.username, password: "test_password_123!"})
 
-      entry = Repo.one!(from e in Entry, where: e.action == "auth.login" and e.actor_user_id == ^user.id)
+      entry =
+        Repo.one!(
+          from(e in Entry, where: e.action == "auth.login" and e.actor_user_id == ^user.id)
+        )
+
       assert entry.result == "success"
     end
 
-    test "break-glass login writes auth.login.break_glass with params.break_glass=true", %{conn: conn} do
+    test "break-glass login writes auth.login.break_glass with params.break_glass=true", %{
+      conn: conn
+    } do
       user = user_fixture()
       Repo.update_all(from(u in User, where: u.id == ^user.id), set: [is_break_glass: true])
       user = Repo.get!(User, user.id)
 
       post(conn, ~p"/users/log_in", %{username: user.username, password: "test_password_123!"})
 
-      entry = Repo.one!(from e in Entry, where: e.action == "auth.login.break_glass")
+      entry = Repo.one!(from(e in Entry, where: e.action == "auth.login.break_glass"))
       assert entry.result == "success"
       assert entry.params["break_glass"] == true
     end
@@ -58,7 +67,9 @@ defmodule VigilWeb.UserSessionControllerTest do
     test "failed login writes an auth.login audit entry with failure result", %{conn: conn} do
       post(conn, ~p"/users/log_in", %{username: "nobody", password: "wrongpassword123!"})
 
-      entry = Repo.one!(from e in Entry, where: e.action == "auth.login" and e.actor_label == "nobody")
+      entry =
+        Repo.one!(from(e in Entry, where: e.action == "auth.login" and e.actor_label == "nobody"))
+
       assert entry.result == "failure"
     end
   end
@@ -80,7 +91,11 @@ defmodule VigilWeb.UserSessionControllerTest do
 
       delete(conn, ~p"/users/log_out")
 
-      entry = Repo.one!(from e in Entry, where: e.action == "auth.logout" and e.actor_user_id == ^user.id)
+      entry =
+        Repo.one!(
+          from(e in Entry, where: e.action == "auth.logout" and e.actor_user_id == ^user.id)
+        )
+
       assert entry.result == "success"
     end
   end

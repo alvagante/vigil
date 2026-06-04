@@ -81,7 +81,9 @@ defmodule VigilWeb.InventoryLiveTest do
       assert length(page1) == 1
       assert cursor != nil
 
-      %{nodes: page2, next_cursor: nil} = Inventory.list_inventory(admin, cursor: cursor, page_size: 1)
+      %{nodes: page2, next_cursor: nil} =
+        Inventory.list_inventory(admin, cursor: cursor, page_size: 1)
+
       assert length(page2) == 1
       # No overlap between pages.
       assert MapSet.disjoint?(

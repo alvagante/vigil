@@ -19,7 +19,9 @@ defmodule VigilWeb.Live.Settings.IntegrationsLiveTest do
   end
 
   test "lists existing integrations", %{conn: conn} do
-    {:ok, _} = IntegrationConfig.create(%{plugin_id: "noop", name: "my-noop", contract_version: "1.0.0"})
+    {:ok, _} =
+      IntegrationConfig.create(%{plugin_id: "noop", name: "my-noop", contract_version: "1.0.0"})
+
     {:ok, view, _html} = live(conn, ~p"/settings/integrations")
     assert render(view) =~ "my-noop"
     assert render(view) =~ "noop"
@@ -44,7 +46,9 @@ defmodule VigilWeb.Live.Settings.IntegrationsLiveTest do
     view |> element("button", "New Integration") |> render_click()
 
     view
-    |> form("form", integration: %{plugin_id: "noop", name: "test-noop", contract_version: "1.0.0"})
+    |> form("form",
+      integration: %{plugin_id: "noop", name: "test-noop", contract_version: "1.0.0"}
+    )
     |> render_submit()
 
     assert render(view) =~ "test-noop"

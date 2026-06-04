@@ -1,0 +1,218 @@
+Handoff — 2026-06-04 18:07:54
+Branch: devel
+Last completed issue: #14 (Bolt plugin — tasks + plans, auto-generated forms, per-task/per-plan RBAC)
+Status: ALL CODE WRITTEN, ALL TESTS PASS — NOT YET COMMITTED
+
+═══════════════════════════════════════════════════════
+SESSION SUMMARY
+═══════════════════════════════════════════════════════
+
+This session implemented issue #14 in full, across 8 TDD vertical slices.
+All 400 tests pass (0 failures). Nothing committed yet — the next session
+should call the advisor, then commit.
+
+Before starting #14, we also committed a backlog of unstaged changes
+(mix format + Cache.Server :sweep handler) as a3dc74d "chore: mix format
++ cache sweep handler from prior sessions".
+
+── What was built ─────────────────────────────────────
+
+Slice 1 — BoltTask struct + list_tasks/2
+  New: apps/vigil_integrations_bolt/lib/vigil/integrations/bolt/task.ex
+  %BoltTask{name, description, parameters} struct.
+  Bolt.list_tasks/2 calls `bolt task show --format json`, parses
+  {"tasks": [["name", "desc|null"], ...]} → [%BoltTask{}].
+  FakeCLI extended with task/plan dispatch and set_task_list/2 etc.
+
+Slice 2 — show_task/3 (parameter metadata)
+  Bolt.show_task/3 calls `bolt task show <name> --format json`.
+  Parses metadata.parameters.{name: {type, description}} into
+  [%{name, type, required, sensitive, description}].
+  required is derived: String.starts_with?(type, "Optional[") == false.
+
+Slice 3 — BoltPlan struct + list_plans/2 + show_plan/3
+  New: apps/vigil_integrations_bolt/lib/vigil/integrations/bolt/plan.ex
+  Same pattern as tasks. Plan detail parameters are at the top level
+  (not inside "metadata"), and include "sensitive" and "default_value".
+
+Slice 4 — Task execution in Runner
+  Runner.run_targets now takes the full artifact struct, not just command text.
+  build_args/3 dispatches on artifact kind:
+    :command → bolt command run <cmd> --targets ...
+    :task    → bolt task run <name> --params '<json>' --targets ...
+    :plan    → bolt plan run <name> --params '<json>'   (NO --targets)
+  extract_text/1 serialises task value as JSON when stdout/stderr are absent
+  (tasks return structured data, not raw text).
+
+Slice 5 — Plan execution in Runner (synthetic target)
+  Plans map to a single execution record with node_id = "__plan__".
+  deliver_plan_result/5 handles the plan output (single JSON blob,
+  not ResultSet items array).
+
+Slice 6 — RBAC: artifact_to_command_string extension
+  File: apps/vigil_core/lib/vigil/core/rbac/evaluator.ex
+  Added clauses for %{kind: :task, name: n} and %{kind: :plan, name: n}
+  (atom and string key variants) — the task/plan name is what the
+  command_policy glob matches against (per design §8.3.2).
+
+Slice 7 — ExecutionController extended for task/plan
+  File: apps/vigil_web/lib/vigil_web/controllers/api/execution_controller.ex
+  build_submit_params/2 now dispatches on "kind" param:
+    kind "task"/"plan" → artifact %{kind: atom, name, params}, derives
+      permission_action as "#{plugin_id}:#{kind}:execute" via DB lookup.
+    default (command) → same derivation: "#{plugin_id}:command:execute"
+  This REMOVES the hardcoded "ssh:command:execute" — now always derived
+  from the integration's plugin_id.
+  Plans use node_ids: ["__plan__"] automatically.
+  BREAKING CHANGE to existing test: grant_execution/1 now grants
+  "exec_test:command:execute" (not "ssh:command:execute").
+
+Slice 8 — ExecutionSubmitLive dynamic forms
+  File: apps/vigil_web/lib/vigil_web/live/execution_submit_live.ex
+  Completely rewritten to support three kinds:
+    command — existing form, no change to UX
+    task — integration selector, then task dropdown (loaded via list_tasks),
+           then task params form (loaded via show_task on task selection)
+    plan — integration selector, then plan dropdown (loaded via list_plans),
+           then plan params form (loaded via show_plan on plan selection)
+  Widget types: :boolean → checkbox, :integer → number input,
+  :enum → select (values parsed from "Enum[a, b, c]" type string),
+  :string → text input. Derived from the raw Puppet type string.
+  Permission action derived from plugin_id + kind (same logic as controller).
+
+── Key design decisions ───────────────────────────────
+
+1. Real Bolt CLI output shapes (verified against bolt 5.5.0 on this machine):
+   - bolt task show --format json → {"tasks": [["name", "desc|null"], ...]}
+   - bolt task show <name>  → {"name", "metadata": {"parameters": {name: {type, description}}}}
+   - bolt plan show --format json → {"plans": [["name", "desc|null"], ...]}
+   - bolt plan show <name>  → {"name", "description", "parameters": {name: {type, sensitive, description}}}
+   - bolt task run / command run → {"items": [...]} ResultSet (same shape)
+   - bolt plan run → raw JSON of plan return value (not ResultSet)
+
+2. Plan execution model: single synthetic record with node_id = "__plan__".
+   This avoids reworking Core.Executions.submit — plans pass
+   targets: %{node_ids: ["__plan__"]} and the runner ignores the target list.
+
+3. Permission action derivation: the controller and LiveView both derive
+   permission_action as "#{plugin_id}:#{kind}:execute" by doing a DB
+   lookup of the integration's plugin_id. This is the ONLY correct way —
+   hardcoding "ssh:command:execute" was a known tech debt from #9.
+
+4. FakeCLI dispatch: distinguishes list vs detail calls by checking whether
+   the third arg starts with "-" (flag) or not (task/plan name):
+     ["task", "show", "--project", ...] → state.task_list
+     ["task", "show", "package", "--project", ...] → state.task_detail
+
+5. RBAC command_policy glob for tasks/plans: the task/plan name is the
+   "command string" that the glob matches against. A policy
+   allow: ["package**"] on action "bolt:task:execute" permits the
+   "package" task. This mirrors §8.3.2's example.
+
+── Files changed ──────────────────────────────────────
+
+NEW:
+  apps/vigil_integrations_bolt/lib/vigil/integrations/bolt/task.ex
+  apps/vigil_integrations_bolt/lib/vigil/integrations/bolt/plan.ex
+
+MODIFIED (functional):
+  apps/vigil_integrations_bolt/lib/vigil/integrations/bolt.ex
+    + list_tasks/2, show_task/3, list_plans/2, show_plan/3
+    + parse_task_list/2, parse_task_detail/1, parse_plan_list/1, parse_plan_detail/1
+    + BoltTask / BoltPlan aliases
+
+  apps/vigil_integrations_bolt/lib/vigil/integrations/bolt/runner.ex
+    + build_args/3 dispatches on artifact kind
+    + deliver_plan_result/5 for plan output
+    + extract_text/1 JSON-encodes task structured values
+    + plan_artifact?/1 predicate
+    + run_targets passes full artifact (not command string)
+
+  apps/vigil_core/lib/vigil/core/rbac/evaluator.ex
+    + artifact_to_command_string/1 clauses for :task and :plan kinds
+
+  apps/vigil_web/lib/vigil_web/controllers/api/execution_controller.ex
+    + build_submit_params/2 dispatches on kind
+    + lookup_plugin_id/1 for permission derivation
+    - removed hardcoded "ssh:command:execute"
+
+  apps/vigil_web/lib/vigil_web/live/execution_submit_live.ex
+    + kind selector (command/task/plan)
+    + task/plan list loading via validate event
+    + task/plan param loading via load_params event
+    + param_fields/1 and param_widget/1 function components
+    + widget_type/1, parse_enum_values/1, strip_optional/1 helpers
+    - removed hardcoded "ssh:command:execute"
+
+MODIFIED (tests):
+  apps/vigil_integrations_bolt/test/support/fake_cli.ex
+    + full FakeCLI rewrite with task/plan dispatch
+  apps/vigil_integrations_bolt/test/vigil/integrations/bolt_test.exs
+    + 18 new tests across tracers 10-14
+  apps/vigil_core/test/vigil/core/rbac_test.exs
+    + 4 new tests for task/plan artifact RBAC
+  apps/vigil_web/test/vigil_web/controllers/api/execution_controller_test.exs
+    + 3 new tests for task/plan execution + permission denial
+    ! grant_execution/1 now grants "exec_test:command:execute"
+  apps/vigil_web/test/vigil_web/live/execution_live_test.exs
+    + 3 new tests for kind selector and kind-change events
+
+── Unstaged vigil_web changes (NOT from this session) ─
+
+Many other vigil_web files show as modified (e.g. health_live.ex,
+integrations_live.ex, roles_live.ex, user_session_controller_test.exs,
+etc.). These appear to be from earlier sessions (mix format, etc.)
+and are NOT part of #14. Recommend checking git diff before staging
+to avoid accidentally committing unrelated changes.
+
+Commit the #14 work as:
+  git add \
+    apps/vigil_integrations_bolt/lib/vigil/integrations/bolt.ex \
+    apps/vigil_integrations_bolt/lib/vigil/integrations/bolt/task.ex \
+    apps/vigil_integrations_bolt/lib/vigil/integrations/bolt/plan.ex \
+    apps/vigil_integrations_bolt/lib/vigil/integrations/bolt/runner.ex \
+    apps/vigil_integrations_bolt/test/support/fake_cli.ex \
+    apps/vigil_integrations_bolt/test/vigil/integrations/bolt_test.exs \
+    apps/vigil_core/lib/vigil/core/rbac/evaluator.ex \
+    apps/vigil_core/test/vigil/core/rbac_test.exs \
+    apps/vigil_web/lib/vigil_web/controllers/api/execution_controller.ex \
+    apps/vigil_web/lib/vigil_web/live/execution_submit_live.ex \
+    apps/vigil_web/test/vigil_web/controllers/api/execution_controller_test.exs \
+    apps/vigil_web/test/vigil_web/live/execution_live_test.exs
+
+═══════════════════════════════════════════════════════
+WHAT'S NEXT — ISSUE #15
+═══════════════════════════════════════════════════════
+
+gh issue view 15 --repo alvagante/vigil
+
+Known from handoff docs:
+- Process-tree reaping (grandchildren not reaped by kill -9 on runner pid)
+  was explicitly deferred from #13 to #15.
+- The bolt_test.exs regression test says "kills the directly-spawned process"
+  (not the full process tree). Full process-tree reaping is in #15.
+- ROAD-107 durability (in-flight executions across restarts) also deferred to #15.
+
+═══════════════════════════════════════════════════════
+KNOWN DEFERRALS (NOT IN #14)
+═══════════════════════════════════════════════════════
+
+- bolt:package:manage (BOLT-207) — built-in task wrappers for apt/yum/etc.
+  Not in scope for #14, maps to a later issue.
+- Bolt streaming output per-target in real time (BOLT-205) — the current
+  runner buffers and delivers all at once (no progressive streaming).
+  Streaming is a future concern tied to the Stream GenServer work in #15.
+- plan execution: targets currently passed as a param string — no UI helper
+  to select targets for plans. Plans work but UX is minimal.
+- ExecutionSubmitLive: the "load_params" event fires via phx-change on
+  the task/plan name selector but requires the integration to already be
+  selected. Edge cases (integration changed after task selected, etc.)
+  are not handled — acceptable for #14.
+- RBAC-201..* from the PRD reference IdP group mapping, not per-task/plan
+  RBAC — those land in auth/RBAC issues, not in #14.
+
+═══════════════════════════════════════════════════════
+SUGGESTED SKILLS FOR NEXT SESSION
+═══════════════════════════════════════════════════════
+
+/tdd continue from latest in docs/handoffs/
