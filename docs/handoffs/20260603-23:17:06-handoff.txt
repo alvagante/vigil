@@ -1,0 +1,105 @@
+# Handoff — 2026-06-03 23:17:06
+
+## Branch / commits this session
+
+Branch: `devel`
+
+Commits landed this session:
+- `f8827c3` feat(cache): Janitor TTL sweeper, EXS-006 stale serving, TEST-204 property tests (#12 slice 2)
+- `0ff2890` feat(cache): wire EXS-006 stale tag through Dispatcher, fix under-lock hit tuple (#12 slice 3)
+
+(Slice 1 — `802efcf` — landed in the prior session.)
+
+All tests green: `1 doctest, 3 properties, 134 tests, 0 failures` (vigil_core) · `35 tests, 0 failures` (vigil_plugin) · `101 tests, 0 failures` (vigil_web) · integrations clean.
+
+---
+
+## Issue #12 — Shared integration cache + RBAC target filtering
+
+### What's done (all slices committed)
+
+| AC | Slice | Status |
+|----|-------|--------|
+| ETS-backed cache (`Cache.Server`) with TTL-aware get/put/invalidate | 1 | done |
+| `Cache.fetch/6` — check-or-compute with single-flight coalescing (TEST-204/EXEC-005) | 1 | done |
+| RBAC target-scope filtering applied by callers post-lookup (ADR-0006) | 1 | done |
+| `Vigil.Core.Cache` public facade + `Cache.Entry` struct | 1 | done |
+| `Cache.Janitor` periodic TTL sweeper (hard-max-age eviction) | 2 | done |
+| EXS-006 stale-data serving with `:degraded` marker at cache layer | 2 | done |
+| TEST-204 property tests (key dimensions, no-principal identity) | 2 | done |
+| EXS-006 wired through `Dispatcher.call/5` — `{:ok, entry, :stale}` → `{:ok, result \| freshness: :stale}` | 3 | done |
+| Under-lock hit bug fixed — `Cache.Server` returns `{:ok, entry, :hit}` 3-tuple consistently | 3 | done |
+
+### What's deferred (explicit scope decisions)
+
+**Cold-start cache warming** — deferred to its own slice. Missing infrastructure:
+- No `Dispatcher.warm/3` function
+- No `warm_on_boot` field in `IntegrationConfig`
+- No Oban `maintenance` queue configured
+
+Would require: `Cache.Warmer` GenServer + `CacheWarmer` Oban worker + queue config + `Dispatcher.warm/3` + config schema change. Treat as a separate issue/slice.
+
+**TEST-205** (10k-node / 10-user bounded query count + latency) — blocked on issue #11 (performance harness / 10k-node fixture).
+
+---
+
+## Key design decisions (not in ADRs)
+
+**Two-level expiry model (EXS-006):**
+- TTL expiry makes an entry *stale* — it stays in ETS, available for stale serving.
+- Janitor evicts entries only when `expires_at` is older than `hard_retention_ms` (default 10 min). This prevents unbounded ETS growth while preserving stale entries for the degraded-source path.
+
+**Freshness tag contract:**
+- `Cache.fetch/6` returns `{:ok, entry, :hit | :miss | :stale}`.
+- `:stale` = expired entry served because `compute_fn` errored and a stale ETS entry existed.
+- `Dispatcher.call/5` maps tags to `Result.freshness`: `:hit` → `:cached`, `:miss` → `:live` (unchanged from result), `:stale` → `:stale`.
+- `Result.freshness` typespec already includes `:stale` (was pre-declared).
+
+**ETS ownership:**
+- `:vigil_cache` table is `:protected` and owned by `Cache.Server`.
+- `Cache.Janitor` cannot write/delete directly — all mutations delegate to `Cache.Server` via `GenServer.call` (synchronous, important for test correctness).
+
+---
+
+## Files changed in #12 (all three slices)
+
+```
+apps/vigil_core/lib/vigil/core/application.ex       — Cache.Server + Janitor added to supervision tree
+apps/vigil_core/lib/vigil/core/cache.ex             — public facade
+apps/vigil_core/lib/vigil/core/cache/entry.ex       — NEW: TTL-aware struct with source_health_at_store
+apps/vigil_core/lib/vigil/core/cache/server.ex      — NEW: ETS GenServer, fetch/coalesce, sweep, EXS-006
+apps/vigil_core/lib/vigil/core/cache/janitor.ex     — NEW: periodic TTL sweeper
+apps/vigil_core/test/vigil/core/cache_test.exs      — NEW: 134 tests + 3 properties
+apps/vigil_plugin/lib/vigil/plugin/dispatcher.ex    — Cache.fetch wiring + :stale clause
+apps/vigil_plugin/test/vigil/plugin/dispatcher_test.exs — EXS-006 dispatcher tests
+apps/vigil_web/lib/vigil_web/inventory.ex           — RBAC target-scope filter post-cache
+apps/vigil_web/lib/vigil_web/live/inventory_live.ex — uses filtered inventory
+apps/vigil_web/test/vigil_web/live/inventory_live_test.exs — updated tests
+apps/vigil_core/lib/vigil/core/rbac.ex              — (touched in slices for filter helper)
+apps/vigil_core/lib/vigil/core/rbac/evaluator.ex    — (touched in slices)
+apps/vigil_core/test/vigil/core/rbac_test.exs       — (touched in slices)
+apps/vigil_plugin/lib/vigil/integrations/manager.ex — (touched in slices)
+```
+
+---
+
+## What to do next
+
+Issue #12 is effectively complete (modulo the two deferred items above). Suggested next steps in priority order:
+
+1. **Close issue #12** — all committed ACs are done. Update the GH issue to note the two deferrals (warming → separate issue, TEST-205 → blocked on #11).
+2. **Open a follow-up issue for cold-start warming** — scope it properly with the missing infrastructure listed above.
+3. **Continue with the next issue in the backlog** — check `docs/handoffs/` memory and `Vigil issue sequencing` memory for the planned order.
+
+---
+
+## Skills for next session
+
+- `/tdd` — if continuing feature work on any issue
+- `/handoff` — at end of next session
+
+## Memory references
+
+- `docs/handoffs/` memory: `vigil-issue-sequencing.md` — planned issue order
+- `docs/handoffs/` memory: `puppet-plugin-scope.md` — if touching #10 follow-up
+- `docs/handoffs/` memory: `lifecycle-scope.md` — if touching Manager/Catalog/Health.Worker
