@@ -5,6 +5,7 @@ defmodule VigilWeb.API.ExecutionControllerTest do
 
   alias Vigil.Core.{Accounts, IntegrationConfig, RBAC}
   alias Vigil.Core.Audit.Entry, as: AuditEntry
+  alias Vigil.Core.Execution.Record
   alias Vigil.Plugin.Catalog
   alias Vigil.Repo
   alias VigilWeb.ExecutionTestPlugin
@@ -27,7 +28,14 @@ defmodule VigilWeb.API.ExecutionControllerTest do
 
   defp grant_execution(user) do
     {:ok, role} = RBAC.create_role(%{name: "api_exec_role_#{System.unique_integer([:positive])}"})
-    {:ok, _} = RBAC.grant_permission(role, %{action: "ssh:command:execute"})
+    # exec_test plugin_id → derived action "exec_test:command:execute"
+    {:ok, _} = RBAC.grant_permission(role, %{action: "exec_test:command:execute"})
+    :ok = RBAC.assign_role(user, role, source: "direct")
+  end
+
+  defp grant_action(user, action) do
+    {:ok, role} = RBAC.create_role(%{name: "api_role_#{System.unique_integer([:positive])}"})
+    {:ok, _} = RBAC.grant_permission(role, %{action: action})
     :ok = RBAC.assign_role(user, role, source: "direct")
   end
 
@@ -83,8 +91,9 @@ defmodule VigilWeb.API.ExecutionControllerTest do
       # ADR-0005: denials must be audited identically to session requests
       entry =
         Repo.one!(
-          from e in AuditEntry,
+          from(e in AuditEntry,
             where: e.action == "execution.submit" and e.actor_user_id == ^user.id
+          )
         )
 
       assert entry.result == "denied"
@@ -104,6 +113,113 @@ defmodule VigilWeb.API.ExecutionControllerTest do
           "integration_id" => integ.id,
           "command" => "uptime",
           "node_ids" => ["host1"]
+        })
+
+      assert resp = json_response(conn, 200)
+      assert is_binary(resp["group_id"])
+    end
+
+    test "accepts task execution with kind=task and derives permission_action from plugin_id" do
+      user = make_user("api_task_ok_user")
+      token = make_token(user)
+      # exec_test plugin_id = "exec_test", kind = task → "exec_test:task:execute"
+      grant_action(user, "exec_test:task:execute")
+      integ = start_exec_integration("api-task-integ")
+
+      conn =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/api/v1/executions", %{
+          "integration_id" => integ.id,
+          "kind" => "task",
+          "name" => "package",
+          "params" => %{"action" => "status", "name" => "nginx"},
+          "node_ids" => ["host1"]
+        })
+
+      assert resp = json_response(conn, 200)
+      assert is_binary(resp["group_id"])
+    end
+
+    test "denies task execution when user lacks the derived task permission" do
+      user = make_user("api_task_deny_user")
+      token = make_token(user)
+      # Only exec_test:command:execute, not exec_test:task:execute
+      grant_execution(user)
+      integ = start_exec_integration("api-task-deny-integ")
+
+      conn =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/api/v1/executions", %{
+          "integration_id" => integ.id,
+          "kind" => "task",
+          "name" => "package",
+          "params" => %{},
+          "node_ids" => ["host1"]
+        })
+
+      assert json_response(conn, 403)["error"] != nil
+
+      # ADR-0005: task denials must be audited with denied_node_ids
+      entry =
+        Repo.one!(
+          from(e in AuditEntry,
+            where: e.action == "execution.submit" and e.actor_user_id == ^user.id
+          )
+        )
+
+      assert entry.result == "denied"
+      assert entry.params["denied_node_ids"] == ["host1"]
+      # No execution record must have been created
+      assert Repo.all(from(r in Record, where: r.node_id == "host1")) == []
+    end
+
+    test "denies plan execution when user lacks plan permission and writes a denied audit entry" do
+      user = make_user("api_plan_deny_user")
+      token = make_token(user)
+      # No exec_test:plan:execute granted
+      integ = start_exec_integration("api-plan-deny-integ")
+
+      conn =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/api/v1/executions", %{
+          "integration_id" => integ.id,
+          "kind" => "plan",
+          "name" => "reboot",
+          "params" => %{"targets" => "host1"}
+        })
+
+      assert json_response(conn, 403)["error"] != nil
+
+      # ADR-0005: plan denials use the synthetic __plan__ target
+      entry =
+        Repo.one!(
+          from(e in AuditEntry,
+            where: e.action == "execution.submit" and e.actor_user_id == ^user.id
+          )
+        )
+
+      assert entry.result == "denied"
+      assert entry.params["denied_node_ids"] == ["__plan__"]
+      assert Repo.all(from(r in Record, where: r.node_id == "__plan__")) == []
+    end
+
+    test "accepts plan execution with synthetic __plan__ target when user has plan permission" do
+      user = make_user("api_plan_ok_user")
+      token = make_token(user)
+      grant_action(user, "exec_test:plan:execute")
+      integ = start_exec_integration("api-plan-integ")
+
+      conn =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/api/v1/executions", %{
+          "integration_id" => integ.id,
+          "kind" => "plan",
+          "name" => "reboot",
+          "params" => %{"targets" => "host1"}
         })
 
       assert resp = json_response(conn, 200)
