@@ -1,0 +1,113 @@
+Handoff — 2026-06-04 15:10:58
+Branch: devel
+Last completed issue: #13 (Bolt plugin)
+Next: #14 (Bolt tasks + plans) or review queue
+
+═══════════════════════════════════════════════════════
+ISSUE #13 — BOLT PLUGIN: STATUS COMPLETE
+═══════════════════════════════════════════════════════
+
+All acceptance criteria met. Tests: 35 bolt tests, 0 failures.
+Full umbrella: EXIT 0.
+
+── What was built ──────────────────────────────────────
+
+apps/vigil_integrations_bolt/
+  lib/vigil/integrations/bolt.ex           — main plugin module
+  lib/vigil/integrations/bolt/application.ex — OTP app
+  lib/vigil/integrations/bolt/server.ex    — per-integration GenServer (config + concurrency slots)
+  lib/vigil/integrations/bolt/cli.ex       — CLI behaviour (seam for test injection)
+  lib/vigil/integrations/bolt/cli/port.ex  — real Erlang Port adapter with dual-timer + OS kill
+  lib/vigil/integrations/bolt/runner.ex    — execution runner (spawn + concurrency + protocol)
+  test/support/fake_cli.ex                 — Agent-backed CLI test double
+  test/vigil/integrations/bolt_test.exs   — 29 integration tests
+  test/vigil/integrations/bolt/cli_port_test.exs — 6 CLI.Port timeout tests (new)
+
+── Key design decisions ────────────────────────────────
+
+1. Inventory via `bolt inventory show --detail --format json`
+   - `--detail` is required; without it, targets are bare name strings.
+   - Verified against live Puppet Bolt JSON reference docs (2026-06-04).
+   - Groups are flat membership strings (["all", "linux", "web"]), not a tree.
+   - Regression test in bolt_test.exs asserts `"--detail" in last_args` (BOLT-106).
+
+2. CLI seam (`Vigil.Integrations.Bolt.CLI` behaviour)
+   - Single `run/3` covers both inventory and execution.
+   - `FakeCLI` dispatches on `List.starts_with?(args, ["inventory"])`.
+   - Injected via `"cli_module"` / `"cli_opts"` config keys; no code change for testing.
+
+3. Direct-process kill on timeout (BOLT-301)
+   - `Port.close/1` alone does NOT kill the OS process — confirmed from Erlang docs.
+   - Fixed: `Port.info(port, :os_pid)` → `:os.cmd("kill -9 <pid>")` before `Port.close`.
+   - `kill -9 <pid>` kills only the directly-spawned child process (the bolt binary or sh
+     wrapper). Background grandchildren spawned by bolt (e.g. SSH subprocesses) are NOT
+     covered — process-tree reaping via process groups (setsid + kill -- -<pgid>) is
+     deferred to issue #15.
+   - Sentinel-file tests verify the directly-spawned process was killed; test names
+     say "kills the directly-spawned process" to reflect the actual scope.
+
+4. Runner streaming is batch-at-end (not per-line)
+   - `bolt command run --format json` emits one JSON blob when all targets finish.
+   - Results are replayed as per-target runner protocol messages after parse.
+   - True streaming (per-target progress) is deferred to issue #15.
+   - This is documented here; no stub/TODO left in the code.
+
+5. exit_code field
+   - `bolt command run --format json` uses `"exit_code"` in the value object (not `"exit_status"`).
+   - `parse_results/1` in runner.ex already handles this correctly.
+
+6. Secret redaction (BOLT-104)
+   - Fields `password`, `private-key`, `token`, `sudo-password` → "[REDACTED]" in transport_config.
+
+7. Concurrency (BOLT-303)
+   - `Server.acquire_slot/2` / `release_slot/1` — atomic counter under GenServer lock.
+   - Released in `after` block of the spawned runner process.
+
+8. BOLT-401 RBAC permission strings
+   - NOT declared explicitly in the plugin.
+   - The Dispatcher (vigil_plugin/lib/vigil/plugin/dispatcher.ex) does NOT derive or enforce
+     permission names at call time — it is a cache+dispatch layer only. The module doc states
+     "RBAC target-scope filtering is applied by callers after the returned result, not here."
+   - `operational_permissions/0` in bolt.ex is informational metadata (documents what the
+     plugin needs from the host); it is not wired to a runtime permission check in this issue.
+   - Per-command RBAC enforcement was added in issue #9 for the REST API path; the Dispatcher
+     path has no equivalent hook yet. This is out of scope for #13; document it for #14+.
+
+── Acceptance criteria check ───────────────────────────
+
+[x] Bolt inventory.yaml parsed into nodes + groups (via bolt inventory show --detail)
+[x] Commands executed via Bolt CLI with per-target output (batch-at-end, deferred #15 for true stream)
+[x] Execution timeouts wall-clock + idle tested at CLI.Port level
+[x] Concurrent execution limits enforced (Server slot tracking)
+[x] Per-target attribution preserved (execution_id through runner protocol)
+[x] Plugin conformance suite passes (Conformance.run passes in test suite)
+[x] Shared cache from #12 handles Bolt inventory (generic Dispatcher + Cache, no bolt-specific test needed)
+
+── Files changed ────────────────────────────────────────
+
+bolt.ex
+  - list_nodes/2: added "--detail" to inventory show args
+  - health_check/1: added "--detail" to inventory show args
+
+cli/port.ex
+  - collect/5 timeout branch: get OS PID via Port.info, SIGKILL before Port.close
+
+bolt_test.exs
+  - added: "passes --detail flag to bolt inventory show" regression test (29th test)
+
+test/vigil/integrations/bolt/cli_port_test.exs  [NEW]
+  - 6 tests: happy path, :not_found, wall-clock timeout,
+    wall-clock direct-process kill sentinel,
+    idle timeout, idle direct-process kill sentinel
+
+── What's NOT here ─────────────────────────────────────
+
+- Bolt tasks / plans — issue #14
+- True per-target streaming + process-tree reaping on timeout — issue #15
+- RBAC enforcement via Dispatcher path — not wired (see design note 8 above)
+- LiveView wiring for Bolt (ExecutionLive) — issue #14 or later
+
+── Next issue recommendation ────────────────────────────
+
+Issue #14: Bolt tasks and plans.
+Pick up from: gh issue view 14 --repo alvagante/vigil

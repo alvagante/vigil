@@ -1,0 +1,74 @@
+# Handoff — 2026-06-03 22:06:35
+
+## Branch & state
+
+- Branch: `devel` — 2 commits ahead of `origin/devel` (not yet pushed)
+- Last committed work: issue #10 (Puppet plugin) — commit `005a0a0`
+- All tests green: **319 tests, 0 failures** across umbrella
+
+## What happened this session
+
+TDD session targeting **issue #12: Shared integration cache + RBAC target filtering + cold-start warming**.
+
+The session found a large WIP already in the tree (untracked + modified files) implementing the cache-mechanics slice of #12. The work was not yet committed.
+
+### Files modified / added (uncommitted)
+
+**New (untracked):**
+- `apps/vigil_core/lib/vigil/core/cache.ex` — public facade; delegates to Server
+- `apps/vigil_core/lib/vigil/core/cache/entry.ex` — TTL-aware Entry struct
+- `apps/vigil_core/lib/vigil/core/cache/server.ex` — ETS-backed GenServer; single-flight coalescing via `fetch/6`
+- `apps/vigil_core/test/vigil/core/cache_test.exs` — 12 tests covering get/put/fetch/invalidate/coalescing
+
+**Modified:**
+- `apps/vigil_core/lib/vigil/core/application.ex` — adds `Cache.Server` to supervisor tree
+- `apps/vigil_core/lib/vigil/core/rbac.ex` — delegates `filter_targets/3`
+- `apps/vigil_core/lib/vigil/core/rbac/evaluator.ex` — implements `filter_targets/3` (2-query invariant, tag-selector matching; RBAC-107/108)
+- `apps/vigil_core/test/vigil/core/rbac_test.exs` — 5 new tests for `filter_targets/3`
+- `apps/vigil_plugin/lib/vigil/plugin/dispatcher.ex` — wired to `Cache.fetch`; `:live` on miss, `:cached` on hit; errors never cached
+- `apps/vigil_plugin/test/vigil/plugin/dispatcher_test.exs` — 3 new cache-wiring tests + existing lifecycle test fix
+- `apps/vigil_web/lib/vigil_web/inventory.ex` — `list_inventory/2` now takes `principal`; RBAC filter after cache lookup; cursor-based post-filter pagination (ADR-0006)
+- `apps/vigil_web/test/vigil_web/live/inventory_live_test.exs` — 5 new tests for RBAC filtering + pagination
+- `apps/vigil_web/lib/vigil_web/live/inventory_live.ex` — mount updated to pass `socket.assigns.current_user` to `list_inventory/2`
+
+### Bugs fixed in this session
+
+1. `inventory_live.ex` called `Inventory.list_inventory()` with no args after signature change → fixed.
+2. `user_fixture(role: :none)` passed keyword list to a map-expecting function → fixed to `%{role: :none}`.
+3. **Lifecycle test regression** (`disable terminates the integration subtree`): disabling an integration left a live cache entry; `Dispatcher.call` returned `:ok` from cache instead of `:error` from registry miss.
+   - Fix: added `Cache.invalidate_integration/1` (ETS `match_delete` on `{integration_id, :_, :_, :_}`) and called it from `Manager.handle_info({:integration_disabled, …})`.
+   - Same fix extended to `handle_info({:integration_config_updated, …})` — same bug class.
+
+## What issue #12 still needs
+
+The session delivered the **cache-mechanics + RBAC-filter + pagination** slice. The following ACs from `gh issue view 12` remain open:
+
+| AC | What's missing |
+|----|---------------|
+| `Cache.Janitor` TTL sweeper (design §2.2) | No Janitor module; expired entries evict lazily on read only → unbounded ETS growth |
+| Cold-start cache warming (CACHE-009 / ROAD-106) | `Cache.Server` starts with an empty table; no warmer wired at boot |
+| EXS-006 stale-data-with-marker serving | `Entry.source_health_at_store` field exists but is unused; upstream failures return `{:error, …}` instead of stale entry + marker |
+| TEST-204 property test (no principal identity in cache keys) | Only a counter-based concurrency test; no property test asserting key shape |
+| TEST-205 (10k-node / 10-user bounded query count + latency) | Depends on #11's 10k-node fixture, which doesn't exist yet |
+
+Issue #11 (Performance harness, 10k-node fixture) was not started and is a prerequisite for TEST-205.
+
+## Suggested next session
+
+**Option A — finish #12:** implement `Cache.Janitor`, cold-start warming, EXS-006 stale serving, and the TEST-204 property test. TEST-205 deferred until #11 lands.
+
+**Option B — tackle #11 first:** build the 10k-node PuppetDB fixture (`test/fixtures/cassettes/puppet/nodes_10k.json`), the `mix vigil.gen_fixtures` task, and the Benchee perf gates — then return to #12 TEST-205.
+
+Either path: use `/tdd next or current issue` to drive the work.
+
+## Key design references
+
+- `docs/adr/ADR-0006.md` — shared unfiltered integration cache; RBAC filter after lookup; pagination after filter
+- `gh issue view 11` — perf harness scope
+- `gh issue view 12` — full #12 acceptance criteria
+- `CONTEXT.md` — domain glossary
+- Memory: `puppet-plugin-scope.md`, `vigil-issue-sequencing.md`
+
+## Commit status
+
+**Nothing committed.** All changes above are staged only in the working tree. The next session should commit the cache-mechanics slice as a single coherent commit (all new + modified files above, excluding `.kirograph/` artifacts) before continuing with the remaining ACs.
