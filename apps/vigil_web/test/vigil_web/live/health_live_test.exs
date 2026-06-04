@@ -19,7 +19,13 @@ defmodule VigilWeb.Live.HealthLiveTest do
   end
 
   test "shows each configured integration with starting status", %{conn: conn} do
-    {:ok, _} = IntegrationConfig.create(%{plugin_id: "noop", name: "health-noop", contract_version: "1.0.0"})
+    {:ok, _} =
+      IntegrationConfig.create(%{
+        plugin_id: "noop",
+        name: "health-noop",
+        contract_version: "1.0.0"
+      })
+
     {:ok, _view, html} = live(conn, ~p"/health")
     assert html =~ "health-noop"
     assert html =~ "starting"
@@ -27,7 +33,11 @@ defmodule VigilWeb.Live.HealthLiveTest do
 
   test "updates status when health PubSub message arrives", %{conn: conn} do
     {:ok, integration} =
-      IntegrationConfig.create(%{plugin_id: "noop", name: "live-health-noop", contract_version: "1.0.0"})
+      IntegrationConfig.create(%{
+        plugin_id: "noop",
+        name: "live-health-noop",
+        contract_version: "1.0.0"
+      })
 
     {:ok, view, _html} = live(conn, ~p"/health")
 

@@ -58,7 +58,10 @@ defmodule VigilWeb.Live.Settings.RolesLiveTest do
       assert render(view) =~ target_user.username
     end
 
-    test "granting a permission writes an rbac.permission.grant audit entry", %{conn: conn, user: admin} do
+    test "granting a permission writes an rbac.permission.grant audit entry", %{
+      conn: conn,
+      user: admin
+    } do
       {:ok, role} = Vigil.Core.RBAC.create_role(%{name: "audit_grant_role"})
       {:ok, view, _html} = live(conn, ~p"/settings/roles")
 
@@ -68,7 +71,13 @@ defmodule VigilWeb.Live.Settings.RolesLiveTest do
       )
       |> render_submit()
 
-      entry = Repo.one!(from e in Entry, where: e.action == "rbac.permission.grant" and e.actor_user_id == ^admin.id)
+      entry =
+        Repo.one!(
+          from(e in Entry,
+            where: e.action == "rbac.permission.grant" and e.actor_user_id == ^admin.id
+          )
+        )
+
       assert entry.result == "success"
       assert entry.params["permission_action"] == "ssh:node:read"
     end
@@ -84,7 +93,11 @@ defmodule VigilWeb.Live.Settings.RolesLiveTest do
       )
       |> render_submit()
 
-      entry = Repo.one!(from e in Entry, where: e.action == "rbac.role.assign" and e.actor_user_id == ^admin.id)
+      entry =
+        Repo.one!(
+          from(e in Entry, where: e.action == "rbac.role.assign" and e.actor_user_id == ^admin.id)
+        )
+
       assert entry.result == "success"
       assert entry.params["username"] == target.username
     end

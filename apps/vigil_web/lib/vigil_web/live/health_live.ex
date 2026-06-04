@@ -45,7 +45,13 @@ defmodule VigilWeb.Live.HealthLive do
   def handle_info({:health, id, status, capabilities, diagnostic}, socket) do
     health_map =
       Map.update(socket.assigns.health_map, id, initial_health(status), fn entry ->
-        %{entry | status: status, capabilities: capabilities, diagnostic: diagnostic, checked_at: DateTime.utc_now()}
+        %{
+          entry
+          | status: status,
+            capabilities: capabilities,
+            diagnostic: diagnostic,
+            checked_at: DateTime.utc_now()
+        }
       end)
 
     {:noreply, assign(socket, :health_map, health_map)}
@@ -70,13 +76,13 @@ defmodule VigilWeb.Live.HealthLive do
           <div class={"card bg-base-200 shadow #{status_card_class(health.status)}"}>
             <div class="card-body">
               <h2 class="card-title">
-                <%= integration.name %>
-                <div class={"badge #{status_badge_class(health.status)}"}><%= health.status %></div>
+                {integration.name}
+                <div class={"badge #{status_badge_class(health.status)}"}>{health.status}</div>
               </h2>
-              <p class="text-sm text-base-content/60">Plugin: <%= integration.plugin_id %></p>
+              <p class="text-sm text-base-content/60">Plugin: {integration.plugin_id}</p>
               <%= if health[:checked_at] do %>
                 <p class="text-xs text-base-content/40">
-                  Last check: <%= Calendar.strftime(health.checked_at, "%H:%M:%S UTC") %>
+                  Last check: {Calendar.strftime(health.checked_at, "%H:%M:%S UTC")}
                 </p>
               <% end %>
               <%= if integration.enabled == false do %>

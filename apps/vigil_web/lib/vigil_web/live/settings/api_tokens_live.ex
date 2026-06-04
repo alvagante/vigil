@@ -59,7 +59,7 @@ defmodule VigilWeb.Live.Settings.APITokensLive do
       <%= if @new_token_value do %>
         <div class="alert alert-success mb-6">
           <span>New token created. Copy it now — it will not be shown again.</span>
-          <code class="font-mono break-all"><%= @new_token_value %></code>
+          <code class="font-mono break-all">{@new_token_value}</code>
         </div>
       <% end %>
 
@@ -84,8 +84,8 @@ defmodule VigilWeb.Live.Settings.APITokensLive do
         </thead>
         <tbody>
           <tr :for={token <- @tokens}>
-            <td><%= token.name %></td>
-            <td><%= format_last_used(token.last_used_at) %></td>
+            <td>{token.name}</td>
+            <td>{format_last_used(token.last_used_at)}</td>
             <td>
               <button
                 phx-click="revoke"

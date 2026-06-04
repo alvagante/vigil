@@ -49,7 +49,11 @@ defmodule VigilWeb.ExecutionTestPlugin do
         Enum.each(targets, fn target ->
           if stream_pid do
             send(stream_pid, {:runner_chunk, target.execution_id, :text, "test output\n"})
-            send(stream_pid, {:runner_target_done, target.execution_id, %{exit_status: 0, duration_ms: 1}})
+
+            send(
+              stream_pid,
+              {:runner_target_done, target.execution_id, %{exit_status: 0, duration_ms: 1}}
+            )
           end
         end)
 

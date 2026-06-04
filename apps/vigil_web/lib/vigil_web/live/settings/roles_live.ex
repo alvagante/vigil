@@ -13,9 +13,11 @@ defmodule VigilWeb.Live.Settings.RolesLive do
     case RBAC.create_role(%{name: String.trim(name)}) do
       {:ok, role} ->
         Audit.write_finalized(admin, "rbac.role.create", :success,
-          target_kind: "role", target_id: role.id,
+          target_kind: "role",
+          target_id: role.id,
           params: %{role_name: role.name}
         )
+
         {:noreply, assign(socket, :roles, RBAC.list_roles())}
 
       {:error, _} ->
@@ -23,7 +25,11 @@ defmodule VigilWeb.Live.Settings.RolesLive do
     end
   end
 
-  def handle_event("grant_permission", %{"role_id" => role_id, "permission" => %{"action" => action}}, socket) do
+  def handle_event(
+        "grant_permission",
+        %{"role_id" => role_id, "permission" => %{"action" => action}},
+        socket
+      ) do
     role = Enum.find(socket.assigns.roles, &(&1.id == role_id))
     admin = socket.assigns.current_user
     trimmed = String.trim(action)
@@ -31,9 +37,11 @@ defmodule VigilWeb.Live.Settings.RolesLive do
     case RBAC.grant_permission(role, %{action: trimmed}) do
       {:ok, _} ->
         Audit.write_finalized(admin, "rbac.permission.grant", :success,
-          target_kind: "role", target_id: role.id,
+          target_kind: "role",
+          target_id: role.id,
           params: %{role_name: role.name, permission_action: trimmed}
         )
+
         {:noreply, assign(socket, :roles, RBAC.list_roles())}
 
       {:error, _} ->
@@ -41,16 +49,22 @@ defmodule VigilWeb.Live.Settings.RolesLive do
     end
   end
 
-  def handle_event("assign_role", %{"role_id" => role_id, "assignment" => %{"username" => username}}, socket) do
+  def handle_event(
+        "assign_role",
+        %{"role_id" => role_id, "assignment" => %{"username" => username}},
+        socket
+      ) do
     role = Enum.find(socket.assigns.roles, &(&1.id == role_id))
     admin = socket.assigns.current_user
 
     with %{} = user <- Accounts.get_user_by_username(String.trim(username)),
          :ok <- RBAC.assign_role(user, role) do
       Audit.write_finalized(admin, "rbac.role.assign", :success,
-        target_kind: "user", target_id: user.id,
+        target_kind: "user",
+        target_id: user.id,
         params: %{role_name: role.name, username: user.username}
       )
+
       {:noreply, assign(socket, :roles, RBAC.list_roles())}
     else
       _ -> {:noreply, socket}
@@ -75,18 +89,20 @@ defmodule VigilWeb.Live.Settings.RolesLive do
           <div class="card-body">
             <div class="flex items-center justify-between">
               <div>
-                <h2 class="card-title"><%= role.name %></h2>
-                <p :if={role.description} class="text-sm text-base-content/60"><%= role.description %></p>
+                <h2 class="card-title">{role.name}</h2>
+                <p :if={role.description} class="text-sm text-base-content/60">{role.description}</p>
               </div>
               <span :if={role.built_in} class="badge badge-ghost">built-in</span>
             </div>
 
             <div class="mt-2">
               <span class="text-sm font-medium">Permissions:</span>
-              <span :if={role.role_permissions == []} class="text-sm text-base-content/40 ml-1">none</span>
+              <span :if={role.role_permissions == []} class="text-sm text-base-content/40 ml-1">
+                none
+              </span>
               <div class="flex flex-wrap gap-1 mt-1">
                 <span :for={perm <- role.role_permissions} class="badge badge-outline badge-sm">
-                  <%= perm.action %>
+                  {perm.action}
                 </span>
               </div>
             </div>
@@ -107,7 +123,7 @@ defmodule VigilWeb.Live.Settings.RolesLive do
               <span :if={role.user_roles == []} class="text-sm text-base-content/40 ml-1">none</span>
               <div class="flex flex-wrap gap-1 mt-1">
                 <span :for={ur <- role.user_roles} class="badge badge-secondary badge-sm">
-                  <%= ur.user.username %>
+                  {ur.user.username}
                 </span>
               </div>
             </div>
