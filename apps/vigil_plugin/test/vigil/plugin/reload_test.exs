@@ -34,7 +34,10 @@ defmodule Vigil.Plugin.ReloadTest do
     assert ConfigServer.get_config(id) == new_config
   end
 
-  test "changing a :restart field causes the ConfigServer to stop", %{integration_id: id, sup_pid: sup} do
+  test "changing a :restart field causes the ConfigServer to stop", %{
+    integration_id: id,
+    sup_pid: sup
+  } do
     [{config_pid_before, _}] = Registry.lookup(Vigil.Plugin.Registry, {:config_server, id})
 
     new_config = %{"endpoint_url" => "http://new-endpoint.local"}
@@ -63,7 +66,10 @@ defmodule Vigil.Plugin.ReloadTest do
 
   test "Schema.validate/2 rejects wrong types" do
     schema = Vigil.Plugin.NoOp.config_schema()
-    assert {:error, errors} = Vigil.Plugin.Schema.validate(schema, %{"check_interval_ms" => "not-an-int"})
+
+    assert {:error, errors} =
+             Vigil.Plugin.Schema.validate(schema, %{"check_interval_ms" => "not-an-int"})
+
     assert Enum.any?(errors, fn {field, _} -> field == "check_interval_ms" end)
   end
 end

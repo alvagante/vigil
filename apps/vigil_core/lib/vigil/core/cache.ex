@@ -20,8 +20,10 @@ defmodule Vigil.Core.Cache do
   defdelegate get(integration_id, capability, action, args), to: Server
 
   @doc "Write to cache via GenServer."
-  @spec put(integration_id(), capability(), atom(), map(), term(), map(), non_neg_integer()) :: :ok
-  defdelegate put(integration_id, capability, action, args, data, source_attribution, ttl_ms), to: Server
+  @spec put(integration_id(), capability(), atom(), map(), term(), map(), non_neg_integer()) ::
+          :ok
+  defdelegate put(integration_id, capability, action, args, data, source_attribution, ttl_ms),
+    to: Server
 
   @doc "Evict all entries for {integration_id, capability} via GenServer."
   @spec invalidate(integration_id(), capability()) :: :ok
@@ -40,7 +42,9 @@ defmodule Vigil.Core.Cache do
   On miss, `compute_fn` is called exactly once regardless of concurrent callers
   for the same key (TEST-204). On hit, `compute_fn` is never called.
   """
-  @spec fetch(integration_id(), capability(), atom(), map(), non_neg_integer(), (-> {:ok, term()} | {:error, term()})) ::
+  @spec fetch(integration_id(), capability(), atom(), map(), non_neg_integer(), (-> {:ok, term()}
+                                                                                    | {:error,
+                                                                                       term()})) ::
           {:ok, Entry.t(), :hit | :miss} | {:error, term()}
   defdelegate fetch(integration_id, capability, action, args, ttl_ms, compute_fn), to: Server
 end

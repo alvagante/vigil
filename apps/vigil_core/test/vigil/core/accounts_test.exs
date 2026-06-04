@@ -90,11 +90,14 @@ defmodule Vigil.Core.AccountsTest do
     end
 
     test "rejects deletion of a break-glass user" do
-      {:ok, user} = Accounts.register_user(%{username: "admin_bg", password: "break_glass_pass_123!"})
+      {:ok, user} =
+        Accounts.register_user(%{username: "admin_bg", password: "break_glass_pass_123!"})
+
       Repo.update_all(
         from(u in Vigil.Core.Accounts.User, where: u.id == ^user.id),
         set: [is_break_glass: true]
       )
+
       bg_user = Repo.get!(Vigil.Core.Accounts.User, user.id)
       assert {:error, :break_glass_protected} = Accounts.delete_user(bg_user)
       assert Repo.get(Vigil.Core.Accounts.User, user.id) != nil

@@ -45,7 +45,8 @@ defmodule Vigil.Core.Executions do
 
     # RBAC partition (ADR-0005): when permission_action is given, split
     # targets into permitted / denied before touching the DB.
-    {permitted_ids, denied_ids} = rbac_partition(principal, params, integration_id, artifact, node_ids)
+    {permitted_ids, denied_ids} =
+      rbac_partition(principal, params, integration_id, artifact, node_ids)
 
     if permitted_ids == [] do
       Audit.write_finalized(principal, "execution.submit", :denied,
@@ -176,7 +177,7 @@ defmodule Vigil.Core.Executions do
     with group when not is_nil(group) <-
            Repo.get(Group, group_id) || {:error, :not_found} do
       node_ids =
-        Repo.all(from r in Record, where: r.execution_group_id == ^group_id, select: r.node_id)
+        Repo.all(from(r in Record, where: r.execution_group_id == ^group_id, select: r.node_id))
 
       submit(principal, %{
         runner_module: runner_module,

@@ -30,7 +30,8 @@ defmodule Vigil.Core.Audit do
 
   Options: `target_kind`, `target_id`, `params`, `correlation_id`, `request_meta`.
   """
-  @spec write_pending(actor(), String.t(), keyword()) :: {:ok, Entry.t()} | {:error, Ecto.Changeset.t()}
+  @spec write_pending(actor(), String.t(), keyword()) ::
+          {:ok, Entry.t()} | {:error, Ecto.Changeset.t()}
   def write_pending(actor, action, opts \\ []) do
     attrs = build_attrs(actor, action, "pending", nil, opts)
 

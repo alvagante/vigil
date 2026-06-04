@@ -45,7 +45,10 @@ defmodule Vigil.Core.Cache.Server do
   # --- Write API (goes through GenServer) ---
 
   def put(integration_id, capability, action, args, data, source_attribution, ttl_ms) do
-    GenServer.call(__MODULE__, {:put, integration_id, capability, action, args, data, source_attribution, ttl_ms})
+    GenServer.call(
+      __MODULE__,
+      {:put, integration_id, capability, action, args, data, source_attribution, ttl_ms}
+    )
   end
 
   def invalidate(integration_id, capability) do
@@ -70,12 +73,21 @@ defmodule Vigil.Core.Cache.Server do
 
       :miss ->
         key = cache_key(integration_id, capability, action, args)
-        GenServer.call(__MODULE__, {:fetch_or_compute, key, integration_id, capability, action, args, ttl_ms, compute_fn}, 30_000)
+
+        GenServer.call(
+          __MODULE__,
+          {:fetch_or_compute, key, integration_id, capability, action, args, ttl_ms, compute_fn},
+          30_000
+        )
     end
   end
 
   @impl true
-  def handle_call({:put, integration_id, capability, action, args, data, source_attribution, ttl_ms}, _from, state) do
+  def handle_call(
+        {:put, integration_id, capability, action, args, data, source_attribution, ttl_ms},
+        _from,
+        state
+      ) do
     key = cache_key(integration_id, capability, action, args)
     entry = Entry.new(data, source_attribution, ttl_ms)
     :ets.insert(@table, {key, entry})
@@ -92,7 +104,27 @@ defmodule Vigil.Core.Cache.Server do
     {:reply, :ok, state}
   end
 
-  def handle_call({:fetch_or_compute, key, integration_id, capability, action, args, ttl_ms, compute_fn}, from, state) do
+  def handle_call({:sweep, hard_retention_ms}, _from, state) do
+    cutoff = DateTime.add(DateTime.utc_now(), -hard_retention_ms, :millisecond)
+
+    keys_to_delete =
+      :ets.foldl(
+        fn {key, entry}, acc ->
+          if DateTime.compare(entry.expires_at, cutoff) == :lt, do: [key | acc], else: acc
+        end,
+        [],
+        @table
+      )
+
+    Enum.each(keys_to_delete, &:ets.delete(@table, &1))
+    {:reply, :ok, state}
+  end
+
+  def handle_call(
+        {:fetch_or_compute, key, integration_id, capability, action, args, ttl_ms, compute_fn},
+        from,
+        state
+      ) do
     # Re-check cache under GenServer lock — another caller may have populated it.
     case get(integration_id, capability, action, args) do
       {:ok, entry} ->
@@ -112,7 +144,11 @@ defmodule Vigil.Core.Cache.Server do
 
           Task.start(fn ->
             result = compute_fn.()
-            GenServer.cast(server, {:compute_done, key, integration_id, capability, action, args, ttl_ms, result, from})
+
+            GenServer.cast(
+              server,
+              {:compute_done, key, integration_id, capability, action, args, ttl_ms, result, from}
+            )
           end)
 
           {:noreply, %{state | in_flight: Map.put(in_flight, key, [])}}
@@ -125,24 +161,11 @@ defmodule Vigil.Core.Cache.Server do
   end
 
   @impl true
-  def handle_call({:sweep, hard_retention_ms}, _from, state) do
-    cutoff = DateTime.add(DateTime.utc_now(), -hard_retention_ms, :millisecond)
-
-    keys_to_delete =
-      :ets.foldl(
-        fn {key, entry}, acc ->
-          if DateTime.compare(entry.expires_at, cutoff) == :lt, do: [key | acc], else: acc
-        end,
-        [],
-        @table
-      )
-
-    Enum.each(keys_to_delete, &:ets.delete(@table, &1))
-    {:reply, :ok, state}
-  end
-
-  @impl true
-  def handle_cast({:compute_done, key, integration_id, capability, action, args, ttl_ms, result, leader_from}, state) do
+  def handle_cast(
+        {:compute_done, key, integration_id, capability, action, args, ttl_ms, result,
+         leader_from},
+        state
+      ) do
     {waiters, in_flight} = Map.pop(state.in_flight, key, [])
 
     tagged_reply =

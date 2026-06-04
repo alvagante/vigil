@@ -6,15 +6,15 @@ defmodule Vigil.Core.Execution.Group do
   @foreign_key_type :binary_id
 
   schema "execution_groups" do
-    field :integration_id, :string
-    field :artifact, :map
-    field :intended_targets, :map, default: %{}
-    field :dispatched_count, :integer, default: 0
-    field :denied_count, :integer, default: 0
-    field :submitted_by, :string
-    field :submitted_at, :utc_datetime_usec
+    field(:integration_id, :string)
+    field(:artifact, :map)
+    field(:intended_targets, :map, default: %{})
+    field(:dispatched_count, :integer, default: 0)
+    field(:denied_count, :integer, default: 0)
+    field(:submitted_by, :string)
+    field(:submitted_at, :utc_datetime_usec)
 
-    has_many :executions, Vigil.Core.Execution.Record, foreign_key: :execution_group_id
+    has_many(:executions, Vigil.Core.Execution.Record, foreign_key: :execution_group_id)
   end
 
   def changeset(group, attrs) do

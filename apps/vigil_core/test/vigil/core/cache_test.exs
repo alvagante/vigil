@@ -98,7 +98,9 @@ defmodule Vigil.Core.CacheTest do
 
       assert entry.data == [:computed_node]
       # Subsequent get hits the cache — also tagged :hit
-      assert {:ok, hit, :hit} = Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:ok, :noop} end)
+      assert {:ok, hit, :hit} =
+               Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:ok, :noop} end)
+
       assert hit.data == [:computed_node]
     end
 
@@ -144,11 +146,15 @@ defmodule Vigil.Core.CacheTest do
 
   describe "TEST-204 — cache keys are fully determined by {integration_id, capability, action, args}" do
     property "any two calls with the same coordinates share the cached result" do
-      check all int_id <- string(:alphanumeric, min_length: 1),
-                cap <- member_of([:inventory, :facts, :reports]),
-                action <- member_of([:list_nodes, :get_facts]),
-                args <- map_of(string(:alphanumeric, min_length: 1), string(:alphanumeric, min_length: 1),
-                               max_length: 3) do
+      check all(
+              int_id <- string(:alphanumeric, min_length: 1),
+              cap <- member_of([:inventory, :facts, :reports]),
+              action <- member_of([:list_nodes, :get_facts]),
+              args <-
+                map_of(string(:alphanumeric, min_length: 1), string(:alphanumeric, min_length: 1),
+                  max_length: 3
+                )
+            ) do
         # Unique integration_id per iteration to avoid cross-iteration pollution
         unique_id = "prop-#{int_id}-#{:erlang.unique_integer([:positive])}"
         data = [%{node: unique_id}]
@@ -162,11 +168,15 @@ defmodule Vigil.Core.CacheTest do
     end
 
     property "varying any key dimension yields a miss" do
-      check all int_id <- string(:alphanumeric, min_length: 3),
-                cap <- member_of([:inventory, :facts]),
-                action <- member_of([:list_nodes, :get_facts]),
-                args <- map_of(string(:alphanumeric, min_length: 1), string(:alphanumeric, min_length: 1),
-                               max_length: 2) do
+      check all(
+              int_id <- string(:alphanumeric, min_length: 3),
+              cap <- member_of([:inventory, :facts]),
+              action <- member_of([:list_nodes, :get_facts]),
+              args <-
+                map_of(string(:alphanumeric, min_length: 1), string(:alphanumeric, min_length: 1),
+                  max_length: 2
+                )
+            ) do
         unique_id = "prop-dim-#{int_id}-#{:erlang.unique_integer([:positive])}"
         :ok = Cache.put(unique_id, cap, action, args, [:data], %{}, 60_000)
 
@@ -191,7 +201,8 @@ defmodule Vigil.Core.CacheTest do
       assert :miss = Cache.get(id, :inventory, :list_nodes, %{})
 
       # Source is unhealthy — compute_fn returns error
-      result = Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:error, :upstream_down} end)
+      result =
+        Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:error, :upstream_down} end)
 
       assert {:ok, entry, :stale} = result
       assert entry.data == [:good_data]
@@ -201,7 +212,8 @@ defmodule Vigil.Core.CacheTest do
     test "fetch returns error when compute_fn fails and no stale entry exists" do
       id = uid()
 
-      result = Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:error, :upstream_down} end)
+      result =
+        Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:error, :upstream_down} end)
 
       assert {:error, :upstream_down} = result
     end
@@ -211,7 +223,8 @@ defmodule Vigil.Core.CacheTest do
       Cache.put(id, :inventory, :list_nodes, %{}, [:old_data], %{}, 1)
       :timer.sleep(10)
 
-      result = Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:ok, [:fresh_data]} end)
+      result =
+        Cache.fetch(id, :inventory, :list_nodes, %{}, 60_000, fn -> {:ok, [:fresh_data]} end)
 
       assert {:ok, entry, :miss} = result
       assert entry.data == [:fresh_data]
@@ -231,7 +244,10 @@ defmodule Vigil.Core.CacheTest do
       Janitor.sweep(5)
 
       # After sweep: entry should be gone from ETS
-      refute match?([_], :ets.lookup(:vigil_cache, {id, :inventory, :list_nodes, :erlang.phash2(%{})}))
+      refute match?(
+               [_],
+               :ets.lookup(:vigil_cache, {id, :inventory, :list_nodes, :erlang.phash2(%{})})
+             )
     end
 
     test "does not delete entries within hard retention window" do
@@ -243,7 +259,10 @@ defmodule Vigil.Core.CacheTest do
       Janitor.sweep(600_000)
 
       # Entry must still be present (stale but available for EXS-006)
-      assert match?([_], :ets.lookup(:vigil_cache, {id, :inventory, :list_nodes, :erlang.phash2(%{})}))
+      assert match?(
+               [_],
+               :ets.lookup(:vigil_cache, {id, :inventory, :list_nodes, :erlang.phash2(%{})})
+             )
     end
 
     test "does not delete live entries" do

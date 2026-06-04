@@ -20,12 +20,12 @@ defmodule Vigil.Core.IntegrationConfig do
 
   @doc "Return all integrations, ordered by name."
   def list_all do
-    Repo.all(from i in Integration, order_by: i.name)
+    Repo.all(from(i in Integration, order_by: i.name))
   end
 
   @doc "Return all enabled integrations."
   def list_enabled do
-    Repo.all(from i in Integration, where: i.enabled == true, order_by: i.name)
+    Repo.all(from(i in Integration, where: i.enabled == true, order_by: i.name))
   end
 
   @doc "Fetch an integration by id, raising if absent."
@@ -47,7 +47,13 @@ defmodule Vigil.Core.IntegrationConfig do
 
     with {:ok, updated} <- result do
       audit(:integration_config_update, updated.id)
-      Phoenix.PubSub.broadcast(PubSub, @pubsub_topic, {:integration_config_updated, updated.id, updated.config})
+
+      Phoenix.PubSub.broadcast(
+        PubSub,
+        @pubsub_topic,
+        {:integration_config_updated, updated.id, updated.config}
+      )
+
       {:ok, updated}
     end
   end

@@ -20,7 +20,7 @@ defmodule Vigil.Core.Accounts do
   end
 
   def authenticate_user(username, password) do
-    user = Repo.one(from u in User, where: u.username == ^username and u.auth_source == "local")
+    user = Repo.one(from(u in User, where: u.username == ^username and u.auth_source == "local"))
 
     cond do
       user && Argon2.verify_pass(password, user.password_hash) ->
@@ -62,11 +62,12 @@ defmodule Vigil.Core.Accounts do
     token_hash = :crypto.hash(:sha256, token)
 
     query =
-      from s in Session,
+      from(s in Session,
         join: u in User,
         on: u.id == s.user_id,
         where: s.token_hash == ^token_hash,
         preload: [user: u]
+      )
 
     case Repo.one(query) do
       nil -> {:error, :not_found}
@@ -75,7 +76,7 @@ defmodule Vigil.Core.Accounts do
   end
 
   def get_user_by_username(username) do
-    Repo.one(from u in User, where: u.username == ^username)
+    Repo.one(from(u in User, where: u.username == ^username))
   end
 
   def delete_user(%User{is_break_glass: true}), do: {:error, :break_glass_protected}
@@ -87,7 +88,7 @@ defmodule Vigil.Core.Accounts do
 
   def delete_session(token) when is_binary(token) do
     token_hash = :crypto.hash(:sha256, token)
-    Repo.delete_all(from s in Session, where: s.token_hash == ^token_hash)
+    Repo.delete_all(from(s in Session, where: s.token_hash == ^token_hash))
     :ok
   end
 end

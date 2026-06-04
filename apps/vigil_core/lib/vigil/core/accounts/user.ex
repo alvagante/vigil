@@ -8,18 +8,18 @@ defmodule Vigil.Core.Accounts.User do
   @derive {Jason.Encoder, only: [:id, :username, :email, :display_name, :auth_source, :status]}
 
   schema "users" do
-    field :tenant_id, :binary_id
-    field :username, :string
-    field :email, :string
-    field :display_name, :string
-    field :password_hash, :string
-    field :auth_source, :string, default: "local"
-    field :external_subject, :string
-    field :status, :string, default: "active"
-    field :is_break_glass, :boolean
-    field :last_login_at, :utc_datetime_usec
+    field(:tenant_id, :binary_id)
+    field(:username, :string)
+    field(:email, :string)
+    field(:display_name, :string)
+    field(:password_hash, :string)
+    field(:auth_source, :string, default: "local")
+    field(:external_subject, :string)
+    field(:status, :string, default: "active")
+    field(:is_break_glass, :boolean)
+    field(:last_login_at, :utc_datetime_usec)
 
-    field :password, :string, virtual: true
+    field(:password, :string, virtual: true)
 
     timestamps(type: :utc_datetime_usec)
   end

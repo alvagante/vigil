@@ -9,14 +9,15 @@ defmodule Vigil.Core.RBAC do
 
   def list_roles do
     Repo.all(
-      from r in Role,
+      from(r in Role,
         order_by: [asc: r.name],
         preload: [:role_permissions, user_roles: :user]
+      )
     )
   end
 
   def list_permissions_for(role) do
-    Repo.all(from rp in RolePermission, where: rp.role_id == ^role.id)
+    Repo.all(from(rp in RolePermission, where: rp.role_id == ^role.id))
   end
 
   def revoke_permission(permission_id) do

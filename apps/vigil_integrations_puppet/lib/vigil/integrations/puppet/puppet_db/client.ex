@@ -37,7 +37,8 @@ defmodule Vigil.Integrations.Puppet.PuppetDB.Client do
         {:error,
          %Error{
            category: :transient_external,
-           message: "circuit breaker open for #{inspect(integration_id)} — PuppetDB is unavailable",
+           message:
+             "circuit breaker open for #{inspect(integration_id)} — PuppetDB is unavailable",
            retriable?: true
          }}
     end

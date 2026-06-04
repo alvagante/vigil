@@ -5,7 +5,10 @@ defmodule Vigil.Plugin.DispatcherTest do
 
   setup do
     integration_id = "noop-" <> (System.unique_integer([:positive]) |> Integer.to_string())
-    {:ok, _} = Registry.register(Vigil.Plugin.Registry, {:integration, integration_id}, Vigil.Plugin.NoOp)
+
+    {:ok, _} =
+      Registry.register(Vigil.Plugin.Registry, {:integration, integration_id}, Vigil.Plugin.NoOp)
+
     %{integration_id: integration_id}
   end
 
@@ -25,18 +28,26 @@ defmodule Vigil.Plugin.DispatcherTest do
   end
 
   test "a plugin started through its child_spec under Integrations.Supervisor is dispatchable" do
-    integration_id = "noop-lifecycle-" <> (System.unique_integer([:positive]) |> Integer.to_string())
+    integration_id =
+      "noop-lifecycle-" <> (System.unique_integer([:positive]) |> Integer.to_string())
 
     spec = Vigil.Plugin.NoOp.child_spec({integration_id, %{}})
     {:ok, pid} = DynamicSupervisor.start_child(Vigil.Integrations.Supervisor, spec)
-    on_exit(fn -> if Process.alive?(pid), do: DynamicSupervisor.terminate_child(Vigil.Integrations.Supervisor, pid) end)
 
-    assert {:ok, %Result{} = result} = Dispatcher.call(integration_id, :inventory, :list_nodes, %{})
+    on_exit(fn ->
+      if Process.alive?(pid),
+        do: DynamicSupervisor.terminate_child(Vigil.Integrations.Supervisor, pid)
+    end)
+
+    assert {:ok, %Result{} = result} =
+             Dispatcher.call(integration_id, :inventory, :list_nodes, %{})
+
     assert result.source.integration_id == integration_id
   end
 
   test "an integration is no longer dispatchable after its subtree is shut down" do
-    integration_id = "noop-shutdown-" <> (System.unique_integer([:positive]) |> Integer.to_string())
+    integration_id =
+      "noop-shutdown-" <> (System.unique_integer([:positive]) |> Integer.to_string())
 
     spec = Vigil.Plugin.NoOp.child_spec({integration_id, %{}})
     {:ok, pid} = DynamicSupervisor.start_child(Vigil.Integrations.Supervisor, spec)
@@ -68,7 +79,16 @@ defmodule Vigil.Plugin.DispatcherTest do
         freshness: :live
       }
 
-      Vigil.Core.Cache.put(id, :inventory, :list_nodes, %{}, stale_result, %{plugin_id: "noop"}, 1)
+      Vigil.Core.Cache.put(
+        id,
+        :inventory,
+        :list_nodes,
+        %{},
+        stale_result,
+        %{plugin_id: "noop"},
+        1
+      )
+
       :timer.sleep(10)
 
       # No plugin registered → upstream fails → stale entry served
@@ -102,7 +122,9 @@ defmodule Vigil.Plugin.DispatcherTest do
                Dispatcher.call(id, :inventory, :list_nodes, %{})
     end
 
-    test "cache miss calls plugin, result is served with :live freshness then :cached", %{integration_id: id} do
+    test "cache miss calls plugin, result is served with :live freshness then :cached", %{
+      integration_id: id
+    } do
       # First call — cache miss — hits the NoOp plugin.
       assert {:ok, %Result{freshness: :live} = result} =
                Dispatcher.call(id, :inventory, :list_nodes, %{})
@@ -116,8 +138,11 @@ defmodule Vigil.Plugin.DispatcherTest do
 
     test "error from plugin is not cached — retry hits the plugin again" do
       # Unknown integration → error; should not pollute cache.
-      assert {:error, %Error{}} = Dispatcher.call("unknown-for-cache-test", :inventory, :list_nodes, %{})
-      assert {:error, %Error{}} = Dispatcher.call("unknown-for-cache-test", :inventory, :list_nodes, %{})
+      assert {:error, %Error{}} =
+               Dispatcher.call("unknown-for-cache-test", :inventory, :list_nodes, %{})
+
+      assert {:error, %Error{}} =
+               Dispatcher.call("unknown-for-cache-test", :inventory, :list_nodes, %{})
     end
   end
 

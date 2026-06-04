@@ -15,7 +15,7 @@ defmodule Vigil.Integrations.PuppetTest do
   setup %{test: test} do
     agent = FakePuppetDB.new()
     id = "puppet-#{:erlang.phash2(test)}-#{System.unique_integer([:positive])}"
-    config = Map.put(@test_config, "http_opts", [agent: agent])
+    config = Map.put(@test_config, "http_opts", agent: agent)
     {:ok, id: id, config: config, agent: agent}
   end
 
@@ -209,7 +209,7 @@ defmodule Vigil.Integrations.PuppetTest do
          %{id: id, agent: agent} do
       low_threshold_config =
         @test_config
-        |> Map.put("http_opts", [agent: agent])
+        |> Map.put("http_opts", agent: agent)
         |> Map.put("circuit_breaker.threshold", 2)
 
       FakePuppetDB.set_error(agent, :connection_refused)
@@ -227,7 +227,7 @@ defmodule Vigil.Integrations.PuppetTest do
          %{id: id, agent: agent} do
       fast_cooldown_config =
         @test_config
-        |> Map.put("http_opts", [agent: agent])
+        |> Map.put("http_opts", agent: agent)
         |> Map.put("circuit_breaker.cooldown_ms", 1)
 
       FakePuppetDB.set_error(agent, :connection_refused)

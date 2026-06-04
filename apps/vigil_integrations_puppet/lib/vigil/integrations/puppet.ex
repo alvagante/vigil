@@ -102,8 +102,7 @@ defmodule Vigil.Integrations.Puppet do
       },
       %Permission{
         kind: :credential,
-        description:
-          "Uses client certificates for mTLS authentication with PuppetDB (PUP-801)."
+        description: "Uses client certificates for mTLS authentication with PuppetDB (PUP-801)."
       }
     ]
   end

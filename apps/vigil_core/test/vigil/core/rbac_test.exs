@@ -81,10 +81,14 @@ defmodule Vigil.Core.RBACTest do
 
   describe "property: union semantics" do
     property "check result is the same regardless of role assignment order" do
-      check all names <- uniq_list_of(string(:alphanumeric, min_length: 4), min_length: 1, max_length: 4),
-                action <- member_of(["ssh:command:execute", "puppet:inventory:read", "bolt:task:run"]),
-                target_action <- member_of(["ssh:command:execute", "puppet:inventory:read", "bolt:task:run"]) do
-
+      check all(
+              names <-
+                uniq_list_of(string(:alphanumeric, min_length: 4), min_length: 1, max_length: 4),
+              action <-
+                member_of(["ssh:command:execute", "puppet:inventory:read", "bolt:task:run"]),
+              target_action <-
+                member_of(["ssh:command:execute", "puppet:inventory:read", "bolt:task:run"])
+            ) do
         user_a = make_user("prop_a_#{:erlang.unique_integer([:positive])}")
         user_b = make_user("prop_b_#{:erlang.unique_integer([:positive])}")
 
@@ -127,7 +131,10 @@ defmodule Vigil.Core.RBACTest do
         end
 
       [first | _] = counts
-      assert first > 0, "telemetry reported 0 queries — check the event name [:vigil, :repo, :query]"
+
+      assert first > 0,
+             "telemetry reported 0 queries — check the event name [:vigil, :repo, :query]"
+
       # 2 queries: one for user_roles, one for role_permissions — regardless of N
       assert counts == [2, 2, 2, 2],
              "Expected [2,2,2,2] (constant), got #{inspect(counts)}"
@@ -245,7 +252,9 @@ defmodule Vigil.Core.RBACTest do
       assign(user, role)
 
       assert :ok =
-               RBAC.check(user, "ssh:command:execute",
+               RBAC.check(
+                 user,
+                 "ssh:command:execute",
                  context(artifact: %{text: "systemctl restart nginx"})
                )
     end
@@ -272,12 +281,16 @@ defmodule Vigil.Core.RBACTest do
       assign(user, role)
 
       assert :ok =
-               RBAC.check(user, "ssh:command:execute",
+               RBAC.check(
+                 user,
+                 "ssh:command:execute",
                  context(artifact: %{text: "systemctl restart nginx"})
                )
 
       assert {:error, :denied} =
-               RBAC.check(user, "ssh:command:execute",
+               RBAC.check(
+                 user,
+                 "ssh:command:execute",
                  context(artifact: %{text: "systemctl stop nginx"})
                )
     end
@@ -288,6 +301,7 @@ defmodule Vigil.Core.RBACTest do
       role_closed = make_role("cp_union_closed")
 
       grant(role_open, "ssh:command:execute")
+
       grant_with_policy(role_closed, "ssh:command:execute", %{
         "allow" => ["systemctl **"],
         "deny" => []
@@ -425,8 +439,22 @@ defmodule Vigil.Core.RBACTest do
       assign(user, role)
 
       nodes = [
-        %{id: "n1", name: "prod-node", tags: %{"env" => "prod"}, targetable?: true, attributes: %{}, source: %{}},
-        %{id: "n2", name: "dev-node", tags: %{"env" => "dev"}, targetable?: true, attributes: %{}, source: %{}}
+        %{
+          id: "n1",
+          name: "prod-node",
+          tags: %{"env" => "prod"},
+          targetable?: true,
+          attributes: %{},
+          source: %{}
+        },
+        %{
+          id: "n2",
+          name: "dev-node",
+          tags: %{"env" => "dev"},
+          targetable?: true,
+          attributes: %{},
+          source: %{}
+        }
       ]
 
       result = RBAC.filter_targets(nodes, user, "integ-1")
@@ -444,7 +472,14 @@ defmodule Vigil.Core.RBACTest do
         for n <- [1, 10, 100] do
           nodes =
             Enum.map(1..n, fn i ->
-              %{id: "node-#{i}", name: "node-#{i}", tags: %{}, targetable?: true, attributes: %{}, source: %{}}
+              %{
+                id: "node-#{i}",
+                name: "node-#{i}",
+                tags: %{},
+                targetable?: true,
+                attributes: %{},
+                source: %{}
+              }
             end)
 
           count_queries(fn -> RBAC.filter_targets(nodes, user, "integ-1") end)

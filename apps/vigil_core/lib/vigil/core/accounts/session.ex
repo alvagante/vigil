@@ -6,14 +6,14 @@ defmodule Vigil.Core.Accounts.Session do
   @foreign_key_type :binary_id
 
   schema "sessions" do
-    belongs_to :user, Vigil.Core.Accounts.User
+    belongs_to(:user, Vigil.Core.Accounts.User)
 
-    field :token_hash, :binary
-    field :created_at, :utc_datetime_usec
-    field :last_active_at, :utc_datetime_usec
-    field :absolute_expires_at, :utc_datetime_usec
-    field :idle_expires_at, :utc_datetime_usec
-    field :client_meta, :map, default: %{}
+    field(:token_hash, :binary)
+    field(:created_at, :utc_datetime_usec)
+    field(:last_active_at, :utc_datetime_usec)
+    field(:absolute_expires_at, :utc_datetime_usec)
+    field(:idle_expires_at, :utc_datetime_usec)
+    field(:client_meta, :map, default: %{})
   end
 
   def changeset(session, attrs) do
@@ -27,8 +27,14 @@ defmodule Vigil.Core.Accounts.Session do
       :idle_expires_at,
       :client_meta
     ])
-    |> validate_required([:user_id, :token_hash, :created_at, :last_active_at,
-                           :absolute_expires_at, :idle_expires_at])
+    |> validate_required([
+      :user_id,
+      :token_hash,
+      :created_at,
+      :last_active_at,
+      :absolute_expires_at,
+      :idle_expires_at
+    ])
     |> unique_constraint(:token_hash)
   end
 end

@@ -33,7 +33,10 @@ defmodule Vigil.Integrations.SSH.RunnerTest do
     {:ok, _pid} = run_start(%{text: "echo hi"}, targets, pool)
 
     assert_receive {:runner_chunk, "exec-1", :text, "hello\n"}
-    assert_receive {:runner_target_done, "exec-1", %{exit_status: 0, duration_ms: dur}} when dur >= 0
+
+    assert_receive {:runner_target_done, "exec-1", %{exit_status: 0, duration_ms: dur}}
+                   when dur >= 0
+
     assert_receive {:runner_done, %{}}
   end
 
@@ -64,7 +67,9 @@ defmodule Vigil.Integrations.SSH.RunnerTest do
     pool = start_pool(agent)
 
     {:ok, pid} =
-      Runner.start("test-integration", %{text: "sleep 60"},
+      Runner.start(
+        "test-integration",
+        %{text: "sleep 60"},
         [%{execution_id: "exec-5", node_id: "host"}],
         %{stream_pid: self(), pool: pool}
       )

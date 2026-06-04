@@ -42,11 +42,21 @@ defmodule Vigil.Integrations.SSH.Runner do
           end
 
           duration_ms = System.monotonic_time(:millisecond) - start_ms
-          maybe_send(stream_pid, {:runner_target_done, target.execution_id, %{exit_status: status, duration_ms: duration_ms}})
+
+          maybe_send(
+            stream_pid,
+            {:runner_target_done, target.execution_id,
+             %{exit_status: status, duration_ms: duration_ms}}
+          )
 
         {:error, _reason} ->
           duration_ms = System.monotonic_time(:millisecond) - start_ms
-          maybe_send(stream_pid, {:runner_target_done, target.execution_id, %{exit_status: -1, duration_ms: duration_ms}})
+
+          maybe_send(
+            stream_pid,
+            {:runner_target_done, target.execution_id,
+             %{exit_status: -1, duration_ms: duration_ms}}
+          )
       end
     end)
 

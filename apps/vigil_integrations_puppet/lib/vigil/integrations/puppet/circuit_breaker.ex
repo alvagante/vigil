@@ -19,9 +19,7 @@ defmodule Vigil.Integrations.Puppet.CircuitBreaker do
             cooldown_ms: 30_000
 
   def start_link({integration_id, config}) do
-    GenServer.start_link(__MODULE__, {integration_id, config},
-      name: via(integration_id)
-    )
+    GenServer.start_link(__MODULE__, {integration_id, config}, name: via(integration_id))
   end
 
   @doc "Returns :ok when calls may proceed, or {:error, :open} when the breaker is tripped."
