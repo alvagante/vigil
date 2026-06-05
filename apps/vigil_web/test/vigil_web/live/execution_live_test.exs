@@ -1,10 +1,17 @@
 defmodule VigilWeb.ExecutionLiveTest do
   use VigilWeb.LiveCase, async: false
 
-  alias Vigil.Core.{Execution.Group, IntegrationConfig}
+  alias Vigil.Core.{Execution.Group, Execution.Stream, IntegrationConfig}
   alias Vigil.Plugin.Catalog
   alias Vigil.Repo
   alias VigilWeb.ExecutionTestPlugin
+
+  defmodule HangingRunner do
+    def start(_integration_id, _artifact, _targets, _opts),
+      do: {:ok, spawn(fn -> Process.sleep(:infinity) end)}
+
+    def abort(pid), do: Process.exit(pid, :kill)
+  end
 
   setup do
     Catalog.register("exec_test", ExecutionTestPlugin)
@@ -194,6 +201,41 @@ defmodule VigilWeb.ExecutionLiveTest do
     refute path == "/executions/#{group.id}"
   end
 
+  test "late-joining viewer sees already-buffered chunks without a new broadcast (STR-103)",
+       %{conn: conn} do
+    group = insert_group()
+
+    record =
+      Repo.insert!(%Vigil.Core.Execution.Record{
+        execution_group_id: group.id,
+        integration_id: "test-int",
+        node_id: "web-01",
+        artifact: %{kind: "command", text: "echo hello"},
+        outcome: "running",
+        streaming_state: "live",
+        started_at: DateTime.utc_now()
+      })
+
+    {:ok, stream_pid} =
+      Stream.start_link(%{
+        runner_module: HangingRunner,
+        integration_id: "test-int",
+        artifact: %{kind: "command", text: "echo hello"},
+        group_id: group.id,
+        targets: [%{execution_id: record.id}]
+      })
+
+    on_exit(fn -> if Process.alive?(stream_pid), do: GenServer.stop(stream_pid) end)
+
+    send(stream_pid, {:runner_chunk, record.id, :stdout, "already buffered\n"})
+    # Sync: call through the same mailbox to ensure the send was processed
+    Stream.get_buffer(group.id, record.id, 0)
+
+    {:ok, _view, html} = live(conn, ~p"/executions/#{group.id}")
+
+    assert html =~ "already buffered"
+  end
+
   test "streaming chunk updates the view via PubSub", %{conn: conn} do
     group = insert_group()
     # Insert a bare Record so we can subscribe to its stream topic
@@ -213,7 +255,7 @@ defmodule VigilWeb.ExecutionLiveTest do
     Phoenix.PubSub.broadcast(
       Vigil.PubSub,
       "execution_stream:#{record.id}",
-      {:chunk, record.id, "live output line\n"}
+      {:chunk, record.id, :stdout, 1, "live output line\n"}
     )
 
     assert render(view) =~ "live output line"

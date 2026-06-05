@@ -16,6 +16,7 @@ defmodule Vigil.Core.Execution.Record do
     field(:outcome, :string, default: "running")
     field(:exit_status, :integer)
     field(:transcript, :binary)
+    field(:partial_transcript, :binary)
     field(:transcript_meta, :map, default: %{})
     field(:streaming_state, :string, default: "live")
     field(:started_at, :utc_datetime_usec)
