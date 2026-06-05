@@ -108,6 +108,7 @@ defmodule Vigil.Core.ExecutionsTest do
                })
 
       assert is_binary(group_id)
+      stop_stream(group_id)
     end
 
     test "command_policy denial blocks execution and writes denied audit entry" do
@@ -167,6 +168,7 @@ defmodule Vigil.Core.ExecutionsTest do
 
       assert "prod-host" in record_node_ids
       refute "dev-host" in record_node_ids
+      stop_stream(group_id)
     end
   end
 
@@ -464,6 +466,136 @@ defmodule Vigil.Core.ExecutionsTest do
     end
   end
 
+  describe "checkpoint (EXEC-106 partial durability)" do
+    test "periodic checkpoint writes gzipped spool to partial_transcript while execution is live" do
+      principal = %{id: "chk-user-1"}
+
+      {:ok, group_id} =
+        Executions.submit(principal, %{
+          runner_module: SilentAfterChunkRunner,
+          integration_id: "integ-chk-1",
+          artifact: %{kind: :command, text: "chk test"},
+          targets: %{node_ids: ["chk-host-1"]},
+          timeout: %{checkpoint_interval_ms: 50, idle_ms: 10_000}
+        })
+
+      on_exit(fn ->
+        case GenServer.whereis(Vigil.Core.Execution.Stream.via(group_id)) do
+          nil -> :ok
+          pid -> GenServer.stop(pid)
+        end
+      end)
+
+      %Record{id: exec_id} = Repo.get_by!(Record, execution_group_id: group_id)
+
+      eventually(
+        fn ->
+          r = Repo.get(Record, exec_id)
+          r && r.partial_transcript != nil
+        end,
+        1000
+      )
+
+      record = Repo.get!(Record, exec_id)
+      assert is_binary(record.partial_transcript)
+      # Gzip magic bytes
+      assert <<31, 139, _::binary>> = record.partial_transcript
+    end
+
+    test "stream terminate/2 writes partial_transcript on shutdown (SIGTERM path)" do
+      principal = %{id: "drain-user-2"}
+
+      {:ok, group_id} =
+        Executions.submit(principal, %{
+          runner_module: SilentAfterChunkRunner,
+          integration_id: "integ-drain-2",
+          artifact: %{kind: :command, text: "sigterm test"},
+          targets: %{node_ids: ["drain-host-2"]},
+          timeout: %{checkpoint_interval_ms: 30_000, idle_ms: 30_000}
+        })
+
+      %Record{id: exec_id} = Repo.get_by!(Record, execution_group_id: group_id)
+
+      eventually(
+        fn ->
+          Vigil.Core.Execution.Stream.get_buffer(group_id, exec_id, 0) != []
+        end,
+        500
+      )
+
+      pid = GenServer.whereis(Vigil.Core.Execution.Stream.via(group_id))
+      GenServer.stop(pid, :shutdown)
+
+      # Wait for the process to fully stop before reading the DB
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 500
+
+      record = Repo.get!(Record, exec_id)
+      assert is_binary(record.partial_transcript)
+      assert <<31, 139, _::binary>> = record.partial_transcript
+    end
+
+    test "completion clears partial_transcript (final transcript wins)" do
+      principal = %{id: "chk-user-2"}
+
+      {:ok, group_id} =
+        Executions.submit(principal, %{
+          runner_module: SlowRunner,
+          integration_id: "integ-chk-2",
+          artifact: %{kind: :command, text: "chk done"},
+          targets: %{node_ids: ["chk-host-2"]},
+          timeout: %{checkpoint_interval_ms: 10, grace_timer_ms: 50}
+        })
+
+      eventually(fn ->
+        r = Repo.get_by(Record, execution_group_id: group_id)
+        r && r.outcome == "ok"
+      end)
+
+      record = Repo.get_by!(Record, execution_group_id: group_id)
+      assert record.partial_transcript == nil
+    end
+  end
+
+  describe "drain/2 (graceful SIGTERM flush)" do
+    test "drain/2 writes gzipped spool to partial_transcript and returns :ok" do
+      principal = %{id: "drain-user-1"}
+
+      {:ok, group_id} =
+        Executions.submit(principal, %{
+          runner_module: SilentAfterChunkRunner,
+          integration_id: "integ-drain-1",
+          artifact: %{kind: :command, text: "drain test"},
+          targets: %{node_ids: ["drain-host-1"]},
+          timeout: %{checkpoint_interval_ms: 30_000, idle_ms: 30_000}
+        })
+
+      on_exit(fn ->
+        case GenServer.whereis(Vigil.Core.Execution.Stream.via(group_id)) do
+          nil -> :ok
+          pid -> GenServer.stop(pid)
+        end
+      end)
+
+      %Record{id: exec_id} = Repo.get_by!(Record, execution_group_id: group_id)
+
+      # Wait for the chunk to land in the live spool before draining.
+      eventually(
+        fn ->
+          Vigil.Core.Execution.Stream.get_buffer(group_id, exec_id, 0) != []
+        end,
+        500
+      )
+
+      pid = GenServer.whereis(Vigil.Core.Execution.Stream.via(group_id))
+      assert :ok = Vigil.Core.Execution.Stream.drain(pid, 5_000)
+
+      record = Repo.get!(Record, exec_id)
+      assert is_binary(record.partial_transcript)
+      assert <<31, 139, _::binary>> = record.partial_transcript
+    end
+  end
+
   describe "PubSub streaming" do
     test "live chunks are broadcast on execution_stream:<execution_id>" do
       principal = %{id: "user-pubsub"}
@@ -480,10 +612,17 @@ defmodule Vigil.Core.ExecutionsTest do
       %Record{id: exec_id} = Repo.get_by!(Record, execution_group_id: group_id)
       Phoenix.PubSub.subscribe(Vigil.PubSub, "execution_stream:#{exec_id}")
 
-      assert_receive {:chunk, ^exec_id, "echo stream\n"}, 500
+      assert_receive {:chunk, ^exec_id, :stdout, 1, "echo stream\n"}, 500
       # Also wait for :ended so the Stream GenServer has persisted before the
       # sandbox is released (avoids a post-test DB error).
       assert_receive {:ended, ^exec_id, :ok}, 500
+    end
+  end
+
+  defp stop_stream(group_id) do
+    case GenServer.whereis(Vigil.Core.Execution.Stream.via(group_id)) do
+      nil -> :ok
+      pid -> GenServer.stop(pid)
     end
   end
 

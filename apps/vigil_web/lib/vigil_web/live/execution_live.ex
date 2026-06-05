@@ -13,7 +13,7 @@ defmodule VigilWeb.Live.ExecutionLive do
 
   use VigilWeb, :live_view
 
-  alias Vigil.Core.{Executions}
+  alias Vigil.Core.{Executions, Execution.Stream}
   alias Vigil.Plugin.Executions, as: PluginExecutions
 
   @impl true
@@ -41,7 +41,16 @@ defmodule VigilWeb.Live.ExecutionLive do
 
     streams =
       if group do
-        Map.new(group.executions, fn exec -> {exec.id, {exec, []}} end)
+        Map.new(group.executions, fn exec ->
+          initial_chunks =
+            if connected?(socket) && exec.streaming_state == "live" do
+              spool_chunks(group_id, exec.id)
+            else
+              []
+            end
+
+          {exec.id, {exec, initial_chunks}}
+        end)
       else
         %{}
       end
@@ -70,7 +79,7 @@ defmodule VigilWeb.Live.ExecutionLive do
   end
 
   @impl true
-  def handle_info({:chunk, execution_id, data}, socket) do
+  def handle_info({:chunk, execution_id, _kind, _position, data}, socket) do
     exec_outputs =
       Map.update(socket.assigns.exec_outputs, execution_id, nil, fn
         nil -> nil
@@ -225,4 +234,15 @@ defmodule VigilWeb.Live.ExecutionLive do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, val), do: Map.put(map, key, val)
+
+  defp spool_chunks(group_id, execution_id) do
+    case GenServer.whereis(Stream.via(group_id)) do
+      nil ->
+        []
+
+      _pid ->
+        Stream.get_buffer(group_id, execution_id, 0)
+        |> Enum.map(fn {_pos, _kind, text} -> text end)
+    end
+  end
 end

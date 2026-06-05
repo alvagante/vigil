@@ -25,6 +25,17 @@ defmodule Vigil.DataCase do
   def setup_sandbox(tags) do
     pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Vigil.Repo, shared: not tags[:async])
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    # Stop any live Execution.Stream GenServers before the sandbox releases so
+    # async persist_all / checkpoint writes don't race with connection teardown.
+    on_exit(fn ->
+      Vigil.Core.Execution.Supervisor
+      |> DynamicSupervisor.which_children()
+      |> Enum.each(fn {_, child_pid, _, _} ->
+        if is_pid(child_pid) && Process.alive?(child_pid) do
+          GenServer.stop(child_pid, :normal, 5_000)
+        end
+      end)
+    end)
   end
 
   def errors_on(changeset) do

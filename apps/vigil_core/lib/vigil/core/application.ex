@@ -11,6 +11,7 @@ defmodule Vigil.Core.Application do
       Vigil.Repo,
       {Oban, Application.fetch_env!(:vigil_core, Oban)},
       {Phoenix.PubSub, name: Vigil.PubSub},
+      {Registry, keys: :unique, name: Vigil.Core.Execution.Registry},
       {Finch, name: Vigil.Finch},
       Vigil.Telemetry.Supervisor,
       Vigil.Core.Supervisor,
@@ -20,6 +21,8 @@ defmodule Vigil.Core.Application do
       Vigil.Core.Cache.Janitor
     ]
 
-    Supervisor.start_link(children, strategy: :one_for_one)
+    result = Supervisor.start_link(children, strategy: :one_for_one)
+    Vigil.Core.Execution.Recovery.recover_in_flight()
+    result
   end
 end
