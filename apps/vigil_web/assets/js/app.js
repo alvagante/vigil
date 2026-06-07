@@ -25,11 +25,42 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/vigil_web"
 import topbar from "../vendor/topbar"
 
+const AckExecutionOutput = {
+  mounted() {
+    this._lastAcked = 0
+    this._ackTimer = null
+    this._scheduleAck()
+  },
+  updated() {
+    this._scheduleAck()
+  },
+  destroyed() {
+    if (this._ackTimer) clearTimeout(this._ackTimer)
+  },
+  _scheduleAck() {
+    if (this._ackTimer) clearTimeout(this._ackTimer)
+    this._ackTimer = setTimeout(() => this._ack(), 100)
+  },
+  _ack() {
+    const spans = this.el.querySelectorAll("span[data-position]")
+    let maxPos = 0
+    spans.forEach(span => {
+      const pos = parseInt(span.dataset.position, 10)
+      if (!isNaN(pos) && pos > maxPos) maxPos = pos
+    })
+    if (maxPos > this._lastAcked) {
+      const execId = this.el.id.slice("stream-".length)
+      this._lastAcked = maxPos
+      this.pushEvent("ack_execution_output", {execution_id: execId, position: String(maxPos)})
+    }
+  }
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, AckExecutionOutput},
 })
 
 // Show progress bar on live navigation and form submits

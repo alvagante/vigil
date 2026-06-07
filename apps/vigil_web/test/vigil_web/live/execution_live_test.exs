@@ -260,4 +260,84 @@ defmodule VigilWeb.ExecutionLiveTest do
 
     assert render(view) =~ "live output line"
   end
+
+  ## STR-201/202 — position-aware dedup and reconnect resume
+
+  defp start_live_stream(group, attrs \\ []) do
+    node_id = Keyword.get(attrs, :node_id, "web-01")
+
+    record =
+      Repo.insert!(%Vigil.Core.Execution.Record{
+        execution_group_id: group.id,
+        integration_id: "test-int",
+        node_id: node_id,
+        artifact: %{kind: "command", text: "echo hello"},
+        outcome: "running",
+        streaming_state: "live",
+        started_at: DateTime.utc_now()
+      })
+
+    {:ok, stream_pid} =
+      Stream.start_link(%{
+        runner_module: HangingRunner,
+        integration_id: "test-int",
+        artifact: %{kind: "command", text: "echo hello"},
+        group_id: group.id,
+        targets: [%{execution_id: record.id}]
+      })
+
+    on_exit(fn -> if Process.alive?(stream_pid), do: GenServer.stop(stream_pid) end)
+    {record, stream_pid}
+  end
+
+  test "duplicate PubSub chunk at already-seen position is not rendered (STR-201)",
+       %{conn: conn} do
+    group = insert_group()
+    {record, stream_pid} = start_live_stream(group)
+
+    send(stream_pid, {:runner_chunk, record.id, :stdout, "original-content\n"})
+    Stream.get_buffer(group.id, record.id, 0)
+
+    {:ok, view, html} = live(conn, ~p"/executions/#{group.id}")
+    assert html =~ "original-content"
+
+    # Re-broadcast position 1 — already seen from spool
+    Phoenix.PubSub.broadcast(
+      Vigil.PubSub,
+      "execution_stream:#{record.id}",
+      {:chunk, record.id, :stdout, 1, "stale-duplicate\n"}
+    )
+
+    refute render(view) =~ "stale-duplicate"
+  end
+
+  test "connecting with position URL param starts spool replay after that position (STR-201)",
+       %{conn: conn} do
+    group = insert_group()
+    {record, stream_pid} = start_live_stream(group)
+
+    send(stream_pid, {:runner_chunk, record.id, :stdout, "before-resume\n"})
+    send(stream_pid, {:runner_chunk, record.id, :stdout, "after-resume\n"})
+    Stream.get_buffer(group.id, record.id, 0)
+
+    # pos[record.id]=1 means "I've seen up to position 1" — should replay from pos 2 only
+    {:ok, _view, html} = live(conn, "/executions/#{group.id}?pos[#{record.id}]=1")
+
+    refute html =~ "before-resume"
+    assert html =~ "after-resume"
+  end
+
+  test "ack event pushes updated position into the URL (STR-202)", %{conn: conn} do
+    group = insert_group()
+    {record, _stream_pid} = start_live_stream(group)
+
+    {:ok, view, _html} = live(conn, ~p"/executions/#{group.id}")
+
+    render_hook(view, "ack_execution_output", %{
+      "execution_id" => record.id,
+      "position" => "7"
+    })
+
+    assert_patch(view, "/executions/#{group.id}?pos%5B#{record.id}%5D=7")
+  end
 end

@@ -24,44 +24,69 @@ defmodule VigilWeb.Live.ExecutionLive do
      |> assign(:group, nil)
      |> assign(:groups, [])
      |> assign(:exec_outputs, %{})
+     |> assign(:last_seen_positions, %{})
      |> assign(:filters, %{})
      |> assign(:page_title, "Executions")}
   end
 
   @impl true
-  def handle_params(%{"group_id" => group_id}, _uri, socket) do
-    groups = Executions.history()
-    group = Enum.find(groups, &(&1.id == group_id))
+  def handle_params(%{"group_id" => group_id} = params, _uri, socket) do
+    pos_params = Map.get(params, "pos", %{})
 
-    if connected?(socket) && group do
-      Enum.each(group.executions, fn exec ->
-        Phoenix.PubSub.subscribe(Vigil.PubSub, "execution_stream:#{exec.id}")
-      end)
-    end
-
-    streams =
-      if group do
-        Map.new(group.executions, fn exec ->
-          initial_chunks =
-            if connected?(socket) && exec.streaming_state == "live" do
-              spool_chunks(group_id, exec.id)
-            else
-              []
-            end
-
-          {exec.id, {exec, initial_chunks}}
+    # When push_patch updates URL pos params from an ack, we're already viewing this group.
+    # In that case, sync positions only — do not re-subscribe or re-spool.
+    if socket.assigns.group_id == group_id && connected?(socket) do
+      last_seen_positions =
+        Enum.reduce(pos_params, socket.assigns.last_seen_positions, fn {exec_id, pos_str}, acc ->
+          new_pos = parse_position(pos_str)
+          if new_pos > Map.get(acc, exec_id, 0), do: Map.put(acc, exec_id, new_pos), else: acc
         end)
-      else
-        %{}
+
+      {:noreply, assign(socket, :last_seen_positions, last_seen_positions)}
+    else
+      groups = Executions.history()
+      group = Enum.find(groups, &(&1.id == group_id))
+
+      if connected?(socket) && group do
+        Enum.each(group.executions, fn exec ->
+          Phoenix.PubSub.subscribe(Vigil.PubSub, "execution_stream:#{exec.id}")
+        end)
       end
 
-    {:noreply,
-     socket
-     |> assign(:group_id, group_id)
-     |> assign(:group, group)
-     |> assign(:groups, groups)
-     |> assign(:exec_outputs, streams)
-     |> assign(:page_title, "Execution")}
+      {streams, new_positions} =
+        if group do
+          Enum.reduce(
+            group.executions,
+            {%{}, socket.assigns.last_seen_positions},
+            fn exec, {acc, pos_acc} ->
+              since = parse_position(pos_params[exec.id])
+
+              initial_chunks =
+                if connected?(socket) && exec.streaming_state == "live" do
+                  spool_chunks(group_id, exec.id, since)
+                else
+                  []
+                end
+
+              max_pos = Enum.reduce(initial_chunks, since, fn {p, _}, m -> max(p, m) end)
+
+              {Map.put(acc, exec.id, {exec, initial_chunks}),
+               Map.put(pos_acc, exec.id, max_pos)}
+            end
+          )
+        else
+          {%{}, socket.assigns.last_seen_positions}
+        end
+
+      {:noreply,
+       socket
+       |> assign(:group_id, group_id)
+       |> assign(:group, group)
+       |> assign(:groups, groups)
+       |> assign(:exec_outputs, streams)
+       |> assign(:last_seen_positions, new_positions)
+       |> assign(:page_title, "Execution")}
+    end
   end
 
   def handle_params(params, _uri, socket) do
@@ -79,18 +104,64 @@ defmodule VigilWeb.Live.ExecutionLive do
   end
 
   @impl true
-  def handle_info({:chunk, execution_id, _kind, _position, data}, socket) do
-    exec_outputs =
-      Map.update(socket.assigns.exec_outputs, execution_id, nil, fn
-        nil -> nil
-        {exec, chunks} -> {exec, chunks ++ [data]}
-      end)
+  def handle_info({:chunk, execution_id, _kind, position, data}, socket) do
+    last_seen = Map.get(socket.assigns.last_seen_positions, execution_id, 0)
 
-    {:noreply, assign(socket, :exec_outputs, exec_outputs)}
+    if position <= last_seen do
+      {:noreply, socket}
+    else
+      exec_outputs =
+        Map.update(socket.assigns.exec_outputs, execution_id, nil, fn
+          nil -> nil
+          {exec, chunks} -> {exec, chunks ++ [{position, data}]}
+        end)
+
+      last_seen_positions = Map.put(socket.assigns.last_seen_positions, execution_id, position)
+
+      {:noreply,
+       socket
+       |> assign(:exec_outputs, exec_outputs)
+       |> assign(:last_seen_positions, last_seen_positions)}
+    end
   end
 
   def handle_info({:ended, _execution_id, _outcome}, socket), do: {:noreply, socket}
   def handle_info(_, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event(
+        "ack_execution_output",
+        %{"execution_id" => exec_id, "position" => pos_str},
+        socket
+      ) do
+    position =
+      case Integer.parse(pos_str) do
+        {n, _} -> n
+        :error -> 0
+      end
+    current = Map.get(socket.assigns.last_seen_positions, exec_id, 0)
+
+    if position > current do
+      group_id = socket.assigns.group_id
+      last_seen_positions = Map.put(socket.assigns.last_seen_positions, exec_id, position)
+
+      if group_id do
+        Stream.ack(group_id, exec_id, self(), position)
+      end
+
+      pos_query =
+        last_seen_positions
+        |> Enum.map(fn {id, pos} -> {"pos[#{id}]", to_string(pos)} end)
+        |> URI.encode_query()
+
+      {:noreply,
+       socket
+       |> assign(:last_seen_positions, last_seen_positions)
+       |> push_patch(to: "/executions/#{group_id}?#{pos_query}")}
+    else
+      {:noreply, socket}
+    end
+  end
 
   @impl true
   def handle_event("rerun_group", _params, socket) do
@@ -164,8 +235,9 @@ defmodule VigilWeb.Live.ExecutionLive do
         <pre
           class="bg-base-300 rounded p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap"
           id={"stream-#{exec.id}"}
+          phx-hook="AckExecutionOutput"
         >
-          <span :for={chunk <- chunks}>{chunk}</span>
+          <span :for={{pos, chunk} <- chunks} data-position={pos}>{chunk}</span>
           <span :if={chunks == [] && exec.outcome == "running"} class="text-base-content/40">
             Waiting for output…
           </span>
@@ -235,14 +307,25 @@ defmodule VigilWeb.Live.ExecutionLive do
   defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, val), do: Map.put(map, key, val)
 
-  defp spool_chunks(group_id, execution_id) do
+  defp spool_chunks(group_id, execution_id, since_pos) do
     case GenServer.whereis(Stream.via(group_id)) do
       nil ->
         []
 
       _pid ->
-        Stream.get_buffer(group_id, execution_id, 0)
-        |> Enum.map(fn {_pos, _kind, text} -> text end)
+        Stream.get_buffer(group_id, execution_id, since_pos)
+        |> Enum.map(fn {pos, _kind, text} -> {pos, text} end)
     end
   end
+
+  defp parse_position(nil), do: 0
+
+  defp parse_position(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, _} -> n
+      :error -> 0
+    end
+  end
+
+  defp parse_position(n) when is_integer(n), do: n
 end
