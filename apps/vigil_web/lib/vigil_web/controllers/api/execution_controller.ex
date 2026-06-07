@@ -1,7 +1,6 @@
 defmodule VigilWeb.API.ExecutionController do
   use VigilWeb, :controller
 
-  alias Vigil.Core.IntegrationConfig
   alias Vigil.Plugin.Executions, as: PluginExecutions
 
   def create(conn, params) do
