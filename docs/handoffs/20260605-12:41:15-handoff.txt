@@ -1,0 +1,95 @@
+# Handoff — 2026-06-05 12:41:15
+
+## Branch
+`devel` — HEAD `79de000`
+
+## What was completed this session
+
+### Commit `79de000` — EXEC-106 execution stream durability + STR-103 + DM-604
+Everything in this commit was TDD'd (RED → GREEN) across two sessions (the first
+ran out of context; this session continued from the summary).
+
+**Durability infrastructure (EXEC-106 / ADR-0007)**
+- Migration `20260605000000_add_partial_transcript_to_executions.exs`: adds
+  `:binary` column `partial_transcript` to `executions`.
+- `Execution.Record`: `field(:partial_transcript, :binary)` added.
+- `Execution.Stream` (design §6.2.4): complete rewrite to add spool
+  (`%{exec_id => [{pos, kind, text}]}`), monotonic positions, checkpoint timer
+  (30 s → `persist_partial_transcripts`), grace timer (60 s post-`runner_done`),
+  wall-clock + idle timeouts, `get_buffer/3`, `ack/4`, `drain/2`.
+- `Execution.Recovery`: scans `outcome: "running"` on boot, marks
+  `aborted_by_restart`, promotes `partial_transcript` → `transcript` with abort
+  marker appended.
+- `application.ex`: Registry + Recovery wired into supervision tree.
+
+**Spool cap (DM-604)**
+- `handle_info({:runner_chunk, ...})` now applies a per-execution byte cap
+  (default 50 MB, configurable via `spool_cap_bytes` in args for tests).
+- When a chunk would push an execution over cap, the truncation marker is emitted
+  instead; subsequent chunks for that execution are silently dropped (`:capped`
+  sentinel in `spool_bytes` map).
+
+**Late-join replay (STR-103)**
+- `ExecutionLive.handle_params` now calls `spool_chunks/2` (a private helper
+  wrapping `Stream.get_buffer/3` with a `GenServer.whereis` nil-guard) for each
+  execution where `streaming_state == "live"`, after subscribing to PubSub.
+  Subscribe-then-fetch ordering ensures no chunk is missed.
+
+**Test suite fixes (DB ownership leak)**
+- `DataCase.setup_sandbox`: global `on_exit` (LIFO, runs before `stop_owner`)
+  stops all `Vigil.Core.Execution.Supervisor` children before sandbox releases.
+- `executions_test.exs`: `stop_stream/1` helper called in two tests that submit
+  without waiting for completion.
+- `runner_done` handler clears `buffers: %{}` after `persist_all` so any
+  `:checkpoint` already queued in the mailbox becomes a no-op.
+
+**Test counts after commit**: 158 + 109 + 35 + 72 + 21 = 395 tests, 0 failures,
+0 DB ownership errors (9 pre-existing Health.Worker errors eliminated alongside
+the stream leak).
+
+## Open items
+
+### Blocked — no `Vigil.Core.Journal` module
+- **§6.2.8 journal entry on abort**: `Execution.Recovery` should write one
+  `:warning` journal entry per restarted execution. Currently skipped with a
+  `# TODO` comment (or omitted). Unblockable once `Vigil.Core.Journal` exists.
+
+### STR-201/202 — position-aware dedup on reconnect
+- `ExecutionLive.handle_info({:chunk, ...})` still ignores `_position`.
+- On reconnect, `handle_params` refetches from position 0 (STR-103), but if
+  PubSub delivers a chunk during the fetch window there is no dedup.
+- Full fix: track `last_seen_position` per exec_id in socket assigns; pass it
+  to `Stream.get_buffer/3` on reconnect; ack via `Stream.ack/4` after render.
+  `Stream.ack/4` and the `subscriber_ack` state are already implemented in the
+  Stream GenServer — only the LiveView side is missing.
+
+### Health.Worker pre-existing DB errors
+- Unrelated to EXEC-106. `vigil_plugin/health/worker.ex` fires DB writes after
+  sandbox releases. The same global-teardown pattern applied to Health.Worker's
+  supervisor would fix this, but it was deferred.
+
+## Key files touched
+
+| File | Role |
+|------|------|
+| `apps/vigil_core/lib/vigil/core/execution/stream.ex` | Core GenServer — spool, cap, timers |
+| `apps/vigil_core/lib/vigil/core/execution/recovery.ex` | Boot-time orphan recovery (new) |
+| `apps/vigil_core/lib/vigil/core/execution/record.ex` | Schema — partial_transcript field |
+| `apps/vigil_core/lib/vigil/core/application.ex` | Supervision wiring |
+| `apps/vigil_core/priv/repo/migrations/20260605000000_*` | DB migration (new) |
+| `apps/vigil_core/test/support/data_case.ex` | Global stream teardown on_exit |
+| `apps/vigil_core/test/vigil/core/execution/stream_test.exs` | Stream unit tests |
+| `apps/vigil_core/test/vigil/core/execution/recovery_test.exs` | Recovery unit tests (new) |
+| `apps/vigil_core/test/vigil/core/executions_test.exs` | Integration tests, stop_stream helper |
+| `apps/vigil_web/lib/vigil_web/live/execution_live.ex` | STR-103 spool_chunks on connect |
+| `apps/vigil_web/test/vigil_web/live/execution_live_test.exs` | STR-103 late-join test |
+
+## Design references
+- ADR-0007: execution stream design (`docs/adr/`)
+- Design §6.2.4: Stream GenServer spec
+- Design §6.2.8: journal-on-abort (blocked)
+- EXEC-106, DM-604, STR-103/201/202: requirement IDs in the PRD
+
+## Suggested skills for next session
+- `/tdd continue` — STR-201/202 position-aware dedup + ack wiring in LiveView
+- `/tdd continue` — Journal module foundation (prerequisite for §6.2.8)
