@@ -15,6 +15,7 @@ defmodule Vigil.Integrations.Puppet do
 
   alias Vigil.Integrations.Puppet.{Catalog, CatalogDiff, CircuitBreaker, ConfigServer, Event, Hiera, PQL, Report, Resource}
   alias Vigil.Integrations.Puppet.PuppetDB.{Client, FinchHTTP}
+  alias Vigil.Integrations.Puppet.Puppetserver
   alias Vigil.Plugin.{Error, Node, Permission, Result, Schema, Source}
 
   @plugin_id "puppet"
@@ -91,6 +92,58 @@ defmodule Vigil.Integrations.Puppet do
           required: false,
           default: 30_000,
           description: "Cooldown period in ms after the breaker opens before a probe is allowed."
+        },
+        %Field{
+          name: "puppetserver.url",
+          type: :url,
+          required: false,
+          description: "Base URL of the Puppetserver API (e.g. https://puppetmaster:8140). Required for environment management and code deploy (PUP-501..508)."
+        },
+        %Field{
+          name: "puppetserver.client_cert",
+          type: :string,
+          required: false,
+          secret?: true,
+          description: "Path to client certificate PEM file for Puppetserver mTLS."
+        },
+        %Field{
+          name: "puppetserver.client_key",
+          type: :string,
+          required: false,
+          secret?: true,
+          description: "Path to client private key PEM file for Puppetserver mTLS."
+        },
+        %Field{
+          name: "puppetserver.ca_cert",
+          type: :string,
+          required: false,
+          description: "Path to CA certificate for Puppetserver TLS verification."
+        },
+        %Field{
+          name: "code_deploy.method",
+          type: :string,
+          required: false,
+          default: "r10k_webhook",
+          description: "Code deploy method: r10k_webhook, code_manager, or remote_exec (PUP-504..507)."
+        },
+        %Field{
+          name: "code_deploy.url",
+          type: :url,
+          required: false,
+          description: "Webhook or Code Manager endpoint URL for code deployment."
+        },
+        %Field{
+          name: "code_deploy.bearer_token",
+          type: :string,
+          required: false,
+          secret?: true,
+          description: "Bearer token for Code Manager authentication."
+        },
+        %Field{
+          name: "code_deploy.exec_integration_id",
+          type: :string,
+          required: false,
+          description: "Integration ID of an SSH/Bolt integration for remote_exec deploys (PUP-507)."
         }
       ]
     }
@@ -121,12 +174,12 @@ defmodule Vigil.Integrations.Puppet do
 
   @impl Vigil.Plugin
   def child_spec({integration_id, config}) do
-    use_finch? = not Map.has_key?(config, "http_module")
+    use_pdb_finch? = not Map.has_key?(config, "http_module")
+    use_pss_finch? = not Map.has_key?(config, "puppetserver.http_module") and Map.has_key?(config, "puppetserver.url")
 
     finch_children =
-      if use_finch?,
-        do: [FinchHTTP.child_spec(integration_id, config)],
-        else: []
+      (if use_pdb_finch?, do: [FinchHTTP.child_spec(integration_id, config)], else: []) ++
+      (if use_pss_finch?, do: [Puppetserver.FinchHTTP.child_spec(integration_id, config)], else: [])
 
     children =
       [
@@ -305,6 +358,76 @@ defmodule Vigil.Integrations.Puppet do
     end
   end
 
+  ## Environments (PUP-501..503)
+
+  def list_environments(integration_id) do
+    case Puppetserver.Client.list_environments(integration_id) do
+      {:ok, envs} -> {:ok, ok_result(integration_id, envs)}
+      {:error, %Error{} = e} -> {:error, e}
+      {:error, reason} -> {:error, transient_pss_error(reason)}
+    end
+  end
+
+  def flush_environment_cache(integration_id, environment \\ nil) do
+    case Puppetserver.Client.flush_environment_cache(integration_id, environment) do
+      {:ok, :flushed} -> {:ok, :flushed}
+      {:error, %Error{} = e} -> {:error, e}
+      {:error, reason} -> {:error, transient_pss_error(reason)}
+    end
+  end
+
+  ## Code deployment (PUP-504..507)
+
+  @doc "Deploy a single named environment. Requires `puppet:environment:deploy` (PUP-504(a))."
+  def deploy_environment(integration_id, environment, principal)
+      when is_binary(environment) and environment != "" do
+    do_deploy(integration_id, {:single, environment}, principal)
+  end
+
+  @doc "Deploy all environments. Same RBAC permission as deploy_environment/3 (PUP-504(b))."
+  def deploy_all_environments(integration_id, principal) do
+    do_deploy(integration_id, :all, principal)
+  end
+
+  defp do_deploy(integration_id, scope, _principal) do
+    with {:ok, config} <- ConfigServer.get_config(integration_id) do
+      method = parse_deploy_method(Map.get(config, "code_deploy.method", "r10k_webhook"))
+
+      case method do
+        :r10k_webhook -> Puppetserver.Client.webhook_deploy(integration_id, scope)
+        :code_manager -> Puppetserver.Client.code_manager_deploy(integration_id, scope)
+        :remote_exec -> remote_exec_deploy(integration_id, scope, config)
+      end
+    else
+      {:error, :not_found} ->
+        {:error, %Error{category: :configuration, message: "no running Puppet integration found", retriable?: false}}
+    end
+  end
+
+  defp parse_deploy_method("r10k_webhook"), do: :r10k_webhook
+  defp parse_deploy_method("code_manager"), do: :code_manager
+  defp parse_deploy_method("remote_exec"), do: :remote_exec
+  defp parse_deploy_method(atom) when is_atom(atom), do: atom
+
+  defp remote_exec_deploy(integration_id, scope, config) do
+    exec_int_id = Map.get(config, "code_deploy.exec_integration_id")
+
+    if is_nil(exec_int_id) do
+      {:error, %Error{category: :config_error, message: "code_deploy.exec_integration_id is not configured", retriable?: false}}
+    else
+      command = r10k_command(scope)
+      dispatcher = Map.get(config, "dispatcher_module", Vigil.Plugin.Dispatcher)
+
+      case dispatcher.call(integration_id, exec_int_id, :run_command, %{command: command}) do
+        {:ok, _} = ok -> ok
+        {:error, reason} -> {:error, transient_pss_error(reason)}
+      end
+    end
+  end
+
+  defp r10k_command(:all), do: "r10k deploy environment --all"
+  defp r10k_command({:single, env}), do: "r10k deploy environment #{env}"
+
   ## Vigil.Plugin.Health
 
   @impl Vigil.Plugin.Health
@@ -444,6 +567,16 @@ defmodule Vigil.Integrations.Puppet do
     %Error{
       category: :transient_external,
       message: "PuppetDB query failed: #{inspect(reason)}",
+      detail: %{reason: reason},
+      retriable?: true,
+      upstream_fault?: true
+    }
+  end
+
+  defp transient_pss_error(reason) do
+    %Error{
+      category: :transient_external,
+      message: "Puppetserver request failed: #{inspect(reason)}",
       detail: %{reason: reason},
       retriable?: true,
       upstream_fault?: true

@@ -2,7 +2,7 @@ defmodule Vigil.Integrations.PuppetTest do
   use ExUnit.Case, async: false
 
   alias Vigil.Integrations.Puppet
-  alias Vigil.Integrations.Puppet.{FakePuppetDB, Hiera.Resolution}
+  alias Vigil.Integrations.Puppet.{FakePuppetDB, FakePuppetserver, Hiera.Resolution}
   alias Vigil.Plugin.{Catalog, Conformance, Error, Result, Source}
 
   @fixtures_repo Path.expand("../../support/hiera_fixtures", __DIR__)
@@ -812,6 +812,287 @@ defmodule Vigil.Integrations.PuppetTest do
       assert res.result["retries"] == 5
       # key only in per-node
       assert res.result["debug"] == true
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 16: list_environments (PUP-501)
+  # ──────────────────────────────────────────────
+
+  describe "list_environments/1 (PUP-501)" do
+    defp pss_config(base_config, pss_agent) do
+      Map.merge(base_config, %{
+        "puppetserver.url" => "https://fake-pss:8140",
+        "puppetserver.http_module" => FakePuppetserver,
+        "puppetserver.http_opts" => [agent: pss_agent]
+      })
+    end
+
+    test "returns list of Environment structs from Puppetserver",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_environments(pss, ["production", "staging", "development"])
+
+      start_instance(id, pss_config(config, pss))
+
+      assert {:ok, %Result{data: envs}} = Puppet.list_environments(id)
+      assert length(envs) == 3
+      names = Enum.map(envs, & &1.name)
+      assert "production" in names
+      assert "staging" in names
+      assert "development" in names
+    end
+
+    test "returns empty list when Puppetserver has no environments",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_environments(pss, [])
+
+      start_instance(id, pss_config(config, pss))
+
+      assert {:ok, %Result{data: []}} = Puppet.list_environments(id)
+    end
+
+    test "returns config_error when puppetserver.url is not configured",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      start_instance(id, config)
+
+      assert {:error, %Error{category: :config_error}} = Puppet.list_environments(id)
+    end
+
+    test "returns transient_external error on Puppetserver failure",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_error(pss, :connection_refused)
+
+      start_instance(id, pss_config(config, pss))
+
+      assert {:error, %Error{category: :transient_external, retriable?: true}} =
+               Puppet.list_environments(id)
+    end
+
+    test "Puppetserver failure does not affect PuppetDB circuit breaker",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [
+        %{"certname" => "web-01.example.com", "deactivated" => nil, "expired" => nil,
+          "latest_report_status" => "changed"}
+      ])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_error(pss, :connection_refused)
+
+      start_instance(id, pss_config(config, pss))
+
+      # Repeatedly fail Puppetserver calls — should not trip the PuppetDB breaker
+      for _ <- 1..10, do: Puppet.list_environments(id)
+
+      # PuppetDB inventory must still work
+      assert {:ok, %Result{data: [_]}} = Puppet.list_nodes(id, %{})
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 17: flush_environment_cache (PUP-502)
+  # ──────────────────────────────────────────────
+
+  describe "flush_environment_cache/2 (PUP-502)" do
+    test "flushes all environments when no environment given",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      start_instance(id, pss_config(config, pss))
+
+      assert {:ok, :flushed} = Puppet.flush_environment_cache(id)
+    end
+
+    test "flushes a named environment",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      start_instance(id, pss_config(config, pss))
+
+      assert {:ok, :flushed} = Puppet.flush_environment_cache(id, "production")
+    end
+
+    test "returns transient_external error on failure",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_error(pss, :connection_refused)
+      start_instance(id, pss_config(config, pss))
+
+      assert {:error, %Error{category: :transient_external}} =
+               Puppet.flush_environment_cache(id)
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 18: deploy_environment via :r10k_webhook (PUP-506)
+  # ──────────────────────────────────────────────
+
+  describe "deploy_environment/3 via :r10k_webhook (PUP-506)" do
+    defp webhook_config(base_config, pss_agent) do
+      Map.merge(base_config, %{
+        "puppetserver.url" => "https://fake-pss:8140",
+        "puppetserver.http_module" => FakePuppetserver,
+        "puppetserver.http_opts" => [agent: pss_agent],
+        "code_deploy.method" => "r10k_webhook",
+        "code_deploy.url" => "https://fake-pss:8140/webhook/r10k"
+      })
+    end
+
+    test "succeeds for a valid environment via webhook",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_deploy_result(pss, {:ok, %{"status" => "queued"}})
+      start_instance(id, webhook_config(config, pss))
+
+      assert {:ok, _} = Puppet.deploy_environment(id, "production", %{id: "alice"})
+    end
+
+    test "returns error on webhook failure without corrupting PuppetDB circuit breaker",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [
+        %{"certname" => "web-01.example.com", "deactivated" => nil, "expired" => nil,
+          "latest_report_status" => "changed"}
+      ])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_deploy_result(pss, {:error, :server_error})
+      start_instance(id, webhook_config(config, pss))
+
+      # Deploy fails
+      assert {:error, %Error{category: :transient_external}} =
+               Puppet.deploy_environment(id, "production", %{id: "alice"})
+
+      # PuppetDB still works — circuit breaker not corrupted
+      assert {:ok, %Result{data: [_]}} = Puppet.list_nodes(id, %{})
+    end
+
+    test "rejects empty environment name",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      start_instance(id, webhook_config(config, pss))
+
+      # deploy_environment/3 guard requires non-empty environment
+      assert_raise FunctionClauseError, fn ->
+        Puppet.deploy_environment(id, "", %{id: "alice"})
+      end
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 19: deploy_environment via :code_manager (PUP-505)
+  # ──────────────────────────────────────────────
+
+  describe "deploy_environment/3 via :code_manager (PUP-505)" do
+    defp cm_config(base_config, pss_agent) do
+      Map.merge(base_config, %{
+        "puppetserver.url" => "https://fake-pss:8140",
+        "puppetserver.http_module" => FakePuppetserver,
+        "puppetserver.http_opts" => [agent: pss_agent],
+        "code_deploy.method" => "code_manager",
+        "code_deploy.url" => "https://fake-pss:8140/code-manager/v1/deploys",
+        "code_deploy.bearer_token" => "test-token"
+      })
+    end
+
+    test "succeeds via Code Manager API",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_deploy_result(pss, {:ok, %{"status" => "queued"}})
+      start_instance(id, cm_config(config, pss))
+
+      assert {:ok, _} = Puppet.deploy_environment(id, "staging", %{id: "alice"})
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 20: deploy_all_environments (PUP-504(b))
+  # ──────────────────────────────────────────────
+
+  describe "deploy_all_environments/2 (PUP-504(b))" do
+    test "deploys all environments via webhook",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+      pss = FakePuppetserver.new()
+      FakePuppetserver.set_deploy_result(pss, {:ok, %{"status" => "all-queued"}})
+
+      deploy_config = Map.merge(config, %{
+        "puppetserver.url" => "https://fake-pss:8140",
+        "puppetserver.http_module" => FakePuppetserver,
+        "puppetserver.http_opts" => [agent: pss],
+        "code_deploy.method" => "r10k_webhook",
+        "code_deploy.url" => "https://fake-pss:8140/webhook/r10k"
+      })
+
+      start_instance(id, deploy_config)
+
+      assert {:ok, _} = Puppet.deploy_all_environments(id, %{id: "alice"})
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 21: deploy via :remote_exec (PUP-507)
+  # ──────────────────────────────────────────────
+
+  describe "deploy_environment/3 via :remote_exec (PUP-507)" do
+    defmodule FakeDispatcher do
+      def call(_integration_id, exec_int_id, :run_command, %{command: cmd}) do
+        send(self(), {:dispatched, exec_int_id, cmd})
+        {:ok, %{exit_code: 0}}
+      end
+    end
+
+    test "dispatches the correct r10k command for a single environment",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+
+      exec_config = Map.merge(config, %{
+        "code_deploy.method" => "remote_exec",
+        "code_deploy.exec_integration_id" => "ssh-prod",
+        "dispatcher_module" => FakeDispatcher
+      })
+
+      start_instance(id, exec_config)
+
+      assert {:ok, _} = Puppet.deploy_environment(id, "production", %{id: "alice"})
+      assert_received {:dispatched, "ssh-prod", "r10k deploy environment production"}
+    end
+
+    test "dispatches deploy-all command for deploy_all_environments/2",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+
+      exec_config = Map.merge(config, %{
+        "code_deploy.method" => "remote_exec",
+        "code_deploy.exec_integration_id" => "ssh-prod",
+        "dispatcher_module" => FakeDispatcher
+      })
+
+      start_instance(id, exec_config)
+
+      assert {:ok, _} = Puppet.deploy_all_environments(id, %{id: "alice"})
+      assert_received {:dispatched, "ssh-prod", "r10k deploy environment --all"}
+    end
+
+    test "returns config_error when exec_integration_id is not set",
+         %{id: id, config: config, agent: pdb_agent} do
+      FakePuppetDB.set_nodes(pdb_agent, [])
+
+      exec_config = Map.merge(config, %{
+        "code_deploy.method" => "remote_exec"
+      })
+
+      start_instance(id, exec_config)
+
+      assert {:error, %Error{category: :config_error}} =
+               Puppet.deploy_environment(id, "production", %{id: "alice"})
     end
   end
 
