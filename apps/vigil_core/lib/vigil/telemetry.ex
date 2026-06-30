@@ -2,6 +2,8 @@ defmodule Vigil.Telemetry.Supervisor do
   use Supervisor
   import Telemetry.Metrics
 
+  @env Mix.env()
+
   def start_link(opts) do
     Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -17,7 +19,7 @@ defmodule Vigil.Telemetry.Supervisor do
   end
 
   defp reporters do
-    if Mix.env() == :test do
+    if @env == :test do
       []
     else
       [{Telemetry.Metrics.ConsoleReporter, metrics: metrics()}]

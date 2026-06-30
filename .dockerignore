@@ -1,0 +1,10 @@
+.git
+.github
+.kirograph
+deps
+_build
+*.log
+node_modules
+.tool-versions
+docs/
+apps/*/test/

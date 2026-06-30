@@ -72,4 +72,8 @@ defmodule VigilWeb.Router do
 
     post "/executions", ExecutionController, :create
   end
+
+  scope "/", VigilWeb do
+    get "/_health", HealthController, :show
+  end
 end
