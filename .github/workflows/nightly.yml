@@ -1,0 +1,46 @@
+name: Nightly
+
+on:
+  schedule:
+    # 02:30 UTC every night
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+env:
+  ELIXIR_VERSION: "1.19.5"
+  OTP_VERSION: "28.0"
+
+jobs:
+  perf:
+    name: Performance suite
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-nightly-${{ hashFiles('**/mix.lock') }}
+      - run: mix deps.get
+      - name: Run performance suite
+        working-directory: apps/vigil_web
+        run: mix test --include perf
