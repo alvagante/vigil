@@ -46,6 +46,22 @@ defmodule Vigil.Plugin.Dispatcher do
     end
   end
 
+  @doc """
+  Pre-populate the cache for `capability` without a user request (CACHE-009).
+
+  Maps the capability to its default action and calls `call/4`. Deferred:
+  max_concurrency_share, coalescer-skip, telemetry source tagging.
+  """
+  @spec warm(Vigil.Plugin.integration_id(), Vigil.Plugin.capability()) ::
+          {:ok, Result.t()} | {:error, term()}
+  def warm(integration_id, capability) do
+    {action, args} = warm_action(capability)
+    call(integration_id, capability, action, args)
+  end
+
+  defp warm_action(:inventory), do: {:list_nodes, %{}}
+  defp warm_action(:facts), do: {:get_facts, %{}}
+
   # Resolve the plugin and invoke the action upstream.
   defp upstream(integration_id, action, args) do
     case Registry.lookup(Vigil.Plugin.Registry, {:integration, integration_id}) do

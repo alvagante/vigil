@@ -15,7 +15,7 @@ config :vigil_core,
 
 config :vigil_core, Oban,
   repo: Vigil.Repo,
-  queues: [default: 10],
+  queues: [default: 10, maintenance: 5],
   plugins: [Oban.Plugins.Pruner]
 
 config :vigil_web,

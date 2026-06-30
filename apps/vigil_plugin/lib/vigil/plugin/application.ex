@@ -11,7 +11,8 @@ defmodule Vigil.Plugin.Application do
       {Registry, keys: :unique, name: Vigil.Plugin.Registry},
       Vigil.Plugin.Catalog,
       {DynamicSupervisor, strategy: :one_for_one, name: Vigil.Integrations.Supervisor},
-      Vigil.Integrations.Manager
+      Vigil.Integrations.Manager,
+      Vigil.Plugin.Cache.Warmer
     ]
 
     opts = [strategy: :one_for_one, name: Vigil.Plugin.Supervisor]

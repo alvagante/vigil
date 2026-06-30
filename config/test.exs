@@ -8,7 +8,9 @@ config :vigil_core, Vigil.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
-config :vigil_core, Oban, testing: :manual
+config :vigil_core, Oban,
+  repo: Vigil.Repo,
+  testing: :manual
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.

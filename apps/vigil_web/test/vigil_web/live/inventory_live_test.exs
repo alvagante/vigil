@@ -28,6 +28,31 @@ defmodule VigilWeb.InventoryLiveTest do
     integ
   end
 
+  describe "ADR-0006 invariant — cache is unfiltered; RBAC applied at boundary" do
+    # This test verifies the structural property from ADR-0006: the shared ETS
+    # cache stores the full unfiltered integration result. RBAC scope reduction
+    # is applied by list_inventory/2 before any data leaves the module — never
+    # by the Dispatcher or the cache layer itself.
+    test "zero-permission user sees no nodes even when cache is already populated" do
+      integ = start_source("invariant-test")
+      admin = user_fixture()
+
+      # Admin populates the cache (cache now holds all nodes for this integration).
+      %{total_filtered: admin_total} = Inventory.list_inventory(admin, [])
+      assert admin_total > 0
+
+      # Restricted user reads from the same integration — same ETS entry, but
+      # list_inventory/2 must apply filter_targets/3 before returning.
+      restricted = user_fixture(%{role: :none})
+      %{nodes: nodes, total_filtered: total} = Inventory.list_inventory(restricted, [])
+
+      assert nodes == []
+      assert total == 0,
+             "Cache for #{integ.id} was populated with #{admin_total} nodes; " <>
+               "restricted reader must see 0, not #{total}"
+    end
+  end
+
   describe "list_inventory/2 — RBAC filtering and cursor pagination (EXS-008, ADR-0006)" do
     test "admin principal sees all nodes from an enabled integration" do
       integ = start_source("filter-test")

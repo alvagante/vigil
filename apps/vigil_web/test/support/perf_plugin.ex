@@ -88,9 +88,13 @@ defmodule VigilWeb.PerfPlugin.Server do
         nil
       )
 
-    {:ok, nodes}
+    {:ok, %{nodes: nodes, call_count: 0}}
   end
 
   @impl true
-  def handle_call(:get_nodes, _from, nodes), do: {:reply, nodes, nodes}
+  def handle_call(:get_nodes, _from, state),
+    do: {:reply, state.nodes, %{state | call_count: state.call_count + 1}}
+
+  def handle_call(:get_call_count, _from, state),
+    do: {:reply, state.call_count, state}
 end

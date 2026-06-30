@@ -120,6 +120,46 @@ defmodule VigilWeb.Perf.InventoryPerfTest do
   end
 
   # ---------------------------------------------------------------------------
+  # TEST-205: cache-hit reads prove bounded upstream call count (ADR-0006)
+  # ---------------------------------------------------------------------------
+
+  @tag :perf
+  test "TEST-205: 10 concurrent readers share one cache entry — plugin called once", %{user: user} do
+    nodes = load_fixture_nodes(@nodes_10k_fixture)
+    integ = start_perf_source(nodes)
+
+    # Warm: first read populates the cache (one upstream plugin call).
+    Inventory.list_inventory(user, [])
+
+    # Ten concurrent readers — all should hit the cache (zero additional upstream calls).
+    tasks =
+      for _ <- 1..10 do
+        Task.async(fn ->
+          reader = user_fixture()
+          Inventory.list_inventory(reader, [])
+        end)
+      end
+
+    {elapsed_ms, results} =
+      :timer.tc(fn -> Task.await_many(tasks, 10_000) end) |> then(fn {us, r} -> {div(us, 1_000), r} end)
+
+    # Every concurrent reader sees the full 10k node set.
+    assert Enum.all?(results, fn r -> r.total_filtered == 10_000 end),
+           "Expected all 10 readers to see 10k nodes; got #{inspect(Enum.map(results, & &1.total_filtered))}"
+
+    # Latency: all 10 concurrent reads complete well within the 3 s window.
+    assert elapsed_ms < 3_000,
+           "10 concurrent cached reads took #{elapsed_ms}ms (target < 3000ms)"
+
+    # Bounded upstream calls: plugin was called exactly once (the warm call above).
+    [{pid, _}] = Registry.lookup(Vigil.Plugin.Registry, {:perf_server, integ.id})
+    call_count = GenServer.call(pid, :get_call_count)
+
+    assert call_count == 1,
+           "Expected 1 upstream plugin call (warm); got #{call_count} — cache sharing broken"
+  end
+
+  # ---------------------------------------------------------------------------
   # Deferred — documented gaps, skipped from nightly gate
   # ---------------------------------------------------------------------------
 
