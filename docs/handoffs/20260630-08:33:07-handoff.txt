@@ -1,0 +1,94 @@
+# Vigil Handoff — 2026-06-30 08:24
+
+## Session outcome
+
+Issue #3 (Release tooling: Mix release + Dockerfile + CI smoke pipeline) is **complete and committed** on branch `devel`. Not yet pushed or closed on GitHub — confirm with user before doing either.
+
+Commits this session:
+- `f20098d` feat(release): #3 Mix release, Dockerfile, health endpoint, CI pipeline
+- `7ba79c6` chore: kirograph token savings + prior-session handoff docs
+
+## What was built
+
+### `Vigil.Release` (`apps/vigil_core/lib/vigil/release.ex`)
+OTP release migration helper. Called via `bin/vigil eval "Vigil.Release.migrate()"`.
+No `Application.start` — uses `with_repo/2` to connect only what's needed.
+
+### Health endpoint (`apps/vigil_web/lib/vigil_web/controllers/health_controller.ex`)
+`GET /_health` → `{"status":"ok","version":"x.x.x"}`. Unauthenticated, routed outside
+auth scope in `router.ex`. 1 test in `health_controller_test.exs` — GREEN.
+
+### `telemetry.ex` fix (`apps/vigil_core/lib/vigil/telemetry.ex`)
+`Mix.env()` was being called at runtime, which crashes in OTP releases.
+Fixed with `@env Mix.env()` compile-time attribute.
+
+### `runtime.exs`
+`server: true` moved to top level (outside `if config_env() == :prod` guard) so the
+endpoint starts when running via release in any env. Tests still pass (241, 0 failures).
+
+### `mix.exs`
+Two changes:
+1. `releases/0` now lists all 9 CE apps as `:permanent` — was missing all six integration
+   apps (`vigil_auth_oidc`, `vigil_integrations_{ansible,bolt,proxmox,puppet,ssh}`).
+   Without this, `Catalog.all()` returns empty in a release.
+2. `"assets.deploy"` alias added: `["cmd --app vigil_web mix assets.deploy"]`.
+   Makes `mix assets.deploy` work from umbrella root (required by Dockerfile).
+
+### `Dockerfile`
+Multi-stage: `hexpm/elixir:1.19.5-erlang-28.0-alpine-3.22.4` build → `alpine:3.22` runtime.
+Uses explicit per-app `COPY apps/<name>/mix.exs` lines (not glob — Docker glob destinations
+are broken for this use case). Runs as `nobody`.
+
+### `.dockerignore`
+Excludes: `.git`, `.github`, `.kirograph`, `deps`, `_build`, `*.log`, `node_modules`,
+`.tool-versions`, `docs/`, `apps/*/test/`.
+
+### `.github/workflows/ci.yml`
+Three jobs: `lint` (compile + format check) → `test` (postgres service, runs `mix test`) →
+`docker-smoke` (docker build + migrate + start + `/_health` check).
+Note: `mix compile --warnings-as-errors` is NOT used in CI — pre-existing cross-app
+reference warnings in `vigil_web` referencing Bolt modules that aren't static deps
+(intentional plugin architecture). The `--warnings-as-errors` flag lives only in the
+`precommit` local alias.
+
+## Explicit deferrals (note in commit message)
+- Credo / Dialyzer baseline — not in this slice
+- Landing-page smoke test — deferred until CI has an unauthenticated bypass
+
+## Next issue: #11 — Performance harness
+`gh issue view 11`
+
+> 10k-node PuppetDB fixture + perf gates (ROAD-101)
+> - `test/fixtures/cassettes/puppet/nodes_10k.json`
+> - `mix vigil.gen_fixtures` Mix task
+> - Tagged `:perf` suite with Benchee + k6
+> - Nightly CI job; fails on latency regression
+> - First targets: inventory page render < 2s at 10k nodes (EXS-007); pagination
+>   without full-set materialisation (EXS-008)
+
+This is TDD-shaped. `/tdd` is the right skill. Read design §13 before planning:
+`docs/specs/design/13-performance-and-scaling.md`
+
+## Current branch state
+Branch: `devel` (2 commits ahead of last push)
+All 241 tests passing. No uncommitted changes.
+
+## Things to do before starting #11
+1. Confirm with user: push `devel` + close #3 on GitHub
+   (`gh issue close 3 --comment "Implemented in f20098d"`)
+2. Update memory file `vigil-issue-sequencing.md` — currently says "#10 next";
+   actual sequence is #3 just closed, #11 is next.
+
+## Memory files relevant to next session
+- `vigil-issue-sequencing.md` — issue backlog order (stale, needs update)
+- `puppet-plugin-scope.md` — PuppetDB HTTP transport details (needed for fixture shape)
+- `lifecycle-scope.md` — plugin Catalog discovery (relevant if #11 touches Catalog)
+
+## Suggested skills
+- `/tdd` — start issue #11 (performance harness is TDD-shaped)
+- `/handoff` — save state at session end
+
+## Repo references
+- Design §13: `docs/specs/design/13-performance-and-scaling.md`
+- PRD ROAD-101: `docs/specs/prd/` (search for ROAD-101)
+- ADR area: `docs/adr/` (check for any ADRs touching perf or test fixtures)
