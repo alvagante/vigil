@@ -1,0 +1,98 @@
+# Handoff — 2026-06-07 18:42:07
+
+## Branch
+`devel` — HEAD `79de000` (pre-commit; changes not yet committed)
+
+## What was completed this session
+
+### STR-201 — position-aware dedup on reconnect (LiveView server side)
+- `ExecutionLive.handle_info({:chunk, ...})`: now checks `position <= last_seen` before
+  appending; stale PubSub duplicates (from the subscribe-before-fetch window) are silently
+  dropped.
+- `ExecutionLive.handle_params` (group_id clause): reads `pos[exec_id]` query params, passes
+  `since_pos` to `spool_chunks/3` on initial mount — so reconnecting with a URL that carries
+  position params resumes from after the last-seen position rather than re-replaying everything.
+- Same-group guard: when `push_patch` (from an ack) re-triggers `handle_params` with the same
+  `group_id`, only position state is synced — no re-subscribe, no re-spool.
+- `last_seen_positions` assign tracks highest position seen per `exec_id` in socket state.
+
+### STR-202 — ack wiring + URL persistence
+- `handle_event("ack_execution_output")`: receives `{execution_id, position}` from the JS hook,
+  calls `Stream.ack/4` (informational; URL is the real resume source), updates
+  `last_seen_positions`, and `push_patch`es the URL with `?pos[exec_id]=N` for each tracked
+  execution.
+- `URI.encode_query/1` encodes brackets: `[` → `%5B`, `]` → `%5D` — tests use encoded form.
+- `parse_position/1` and the ack handler's position parsing hardened to `Integer.parse` +
+  fallback to 0 (was `String.to_integer`, which raises on malformed client input).
+
+### AckExecutionOutput phx-hook (JS, STR-202)
+- Written in `apps/vigil_web/assets/js/app.js`.
+- On `mounted` and `updated`: scans `span[data-position]` children of the `<pre>`, finds max
+  position, debounces 100 ms, then `pushEvent("ack_execution_output", {execution_id, position})`
+  if position > last acked.
+- Execution ID derived from `this.el.id.slice("stream-".length)`.
+- `destroyed` clears the debounce timer to avoid leaks.
+- Registered in `LiveSocket` hooks as `AckExecutionOutput`.
+
+### Template changes
+- `<pre id={"stream-#{exec.id}"}>` in `group_detail/1` gained `phx-hook="AckExecutionOutput"`.
+- Chunk spans already carried `data-position={pos}` from the prior session (STR-103 work).
+
+### Tests
+- 3 new tests in `execution_live_test.exs` (added in prior session, stayed GREEN):
+  1. "duplicate PubSub chunk at already-seen position is not rendered (STR-201)"
+  2. "connecting with position URL param starts spool replay after that position (STR-201)"
+  3. "ack event pushes updated position into the URL (STR-202)"
+- All tests exercise server-side halves via `render_hook`; the JS hook is not test-covered
+  (requires browser).
+- **Final count**: 112 vigil_web tests, 0 failures.
+
+## Open items
+
+### Browser verification of the full STR-201/202 flow
+- **Not done.** Dev server starts clean (`mix phx.server` → Bandit on :4000, 0 errors). Asset
+  build is clean (esbuild 16ms, no JS errors). Tests are green. But the end-to-end path
+  (ack WS frames visible, URL updates live, refresh resumes from right position) was not
+  exercised in a browser this session.
+- Start an SSH or exec integration, submit a command at `/executions/new`, observe on the
+  detail page: (a) WS frames show `ack_execution_output`, (b) URL gains `?pos[...]=N`,
+  (c) refresh resumes without re-replaying.
+
+### Known JS limitation — debounce starvation under sustained streaming
+- `_scheduleAck` resets the 100ms timer on every `updated` call. During a continuous fast
+  stream, `updated` fires faster than 100ms, so `_ack` never runs until there's a gap.
+  This means the URL can be stale on disconnect mid-stream — reconnect replays from last ack
+  rather than last received position.
+- Fix: use a throttle (fire at most every 100ms, but guarantee a fire) instead of a pure
+  debounce. Not blocking for most use cases; noted here as a known limitation.
+
+### Blocked — no `Vigil.Core.Journal` module
+- §6.2.8 journal entry on abort: `Execution.Recovery` has a `# TODO` comment.
+  Unblockable until `Vigil.Core.Journal` exists.
+
+### Health.Worker pre-existing DB errors
+- Unrelated to this work. `vigil_plugin/health/worker.ex` fires DB writes after sandbox releases
+  in test. Deferred.
+
+### subscriber_ack in Stream is vestigial
+- `Stream.ack/4` stores `subscriber_ack` per pid but nothing reads it.
+- Reserved for future spool-GC (trim already-acked positions from the buffer).
+- Not blocking anything; just dead state for now.
+
+## Key files changed
+
+| File | Change |
+|------|--------|
+| `apps/vigil_web/lib/vigil_web/live/execution_live.ex` | STR-201/202: last_seen_positions, dedup, URL pos params, ack handler, same-group guard, Integer.parse hardening |
+| `apps/vigil_web/assets/js/app.js` | AckExecutionOutput hook + registration |
+| `apps/vigil_web/test/vigil_web/live/execution_live_test.exs` | 3 new tests + start_live_stream/2 helper (added prior session) |
+
+## Design references
+- ADR-0007: execution stream design
+- Design §6.2.4: Stream GenServer spec
+- STR-201/202: requirement IDs in the PRD
+
+## Suggested skills for next session
+- Browser-verify STR-201/202 end-to-end (open dev server, exercise the ack/reconnect path)
+- `/tdd continue` — Journal module foundation (prerequisite for §6.2.8)
+- `/tdd continue` — Health.Worker DB ownership fix (deferred from EXEC-106)
