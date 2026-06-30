@@ -70,9 +70,8 @@ defmodule Vigil.Core.Execution.RecoveryTest do
       Recovery.recover_in_flight()
 
       record = Repo.get!(Record, exec_id)
-      transcript_text = :zlib.gunzip(record.transcript)
-      assert transcript_text =~ "partial output"
-      assert transcript_text =~ "ABORTED"
+      assert record.transcript =~ "partial output"
+      assert record.transcript =~ "ABORTED"
     end
 
     test "does not touch executions that are already in a terminal state" do

@@ -10,8 +10,6 @@ defmodule Vigil.Core.Executions do
   - **ROAD-104 audit-first ordering** — a minimal audit log is written per
     submission. The full audit pipeline (Audit.write_pending/finalize) lands
     in #8 with the RBAC infrastructure.
-  - **ROAD-107 durability** — in-flight executions are NOT durable across node
-    restarts. Checkpoint/drain machinery lands in #15 (ADR-0007).
   """
 
   alias Vigil.Core.Audit

@@ -29,8 +29,8 @@ defmodule Vigil.Core.Execution.Recovery do
   defp recover_record(record) do
     transcript =
       case record.partial_transcript do
-        nil -> :zlib.gzip(@abort_marker)
-        gzipped -> rebuild_transcript(gzipped)
+        nil -> @abort_marker
+        gzipped -> :zlib.gunzip(gzipped) <> @abort_marker
       end
 
     record
@@ -42,10 +42,5 @@ defmodule Vigil.Core.Execution.Recovery do
       ended_at: DateTime.utc_now()
     )
     |> Repo.update!()
-  end
-
-  defp rebuild_transcript(gzipped) do
-    raw = :zlib.gunzip(gzipped)
-    :zlib.gzip(raw <> @abort_marker)
   end
 end

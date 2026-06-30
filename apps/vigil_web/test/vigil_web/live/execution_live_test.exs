@@ -327,6 +327,52 @@ defmodule VigilWeb.ExecutionLiveTest do
     assert html =~ "after-resume"
   end
 
+  ## STR-204 — long-absent user sees completed transcript
+
+  test "STR-204: closed execution with plain transcript is rendered (normal completion)",
+       %{conn: conn} do
+    group = insert_group()
+
+    Repo.insert!(%Vigil.Core.Execution.Record{
+      execution_group_id: group.id,
+      integration_id: "test-int",
+      node_id: "web-01",
+      artifact: %{kind: "command", text: "echo hello"},
+      outcome: "ok",
+      streaming_state: "closed",
+      transcript: "hello from history\n",
+      started_at: DateTime.utc_now(),
+      ended_at: DateTime.utc_now()
+    })
+
+    {:ok, _view, html} = live(conn, ~p"/executions/#{group.id}")
+
+    assert html =~ "hello from history"
+  end
+
+  test "STR-204: aborted-by-restart execution shows readable transcript",
+       %{conn: conn} do
+    group = insert_group()
+
+    # transcript is plain text — the invariant enforced by Recovery.recover_record/1
+    Repo.insert!(%Vigil.Core.Execution.Record{
+      execution_group_id: group.id,
+      integration_id: "test-int",
+      node_id: "web-01",
+      artifact: %{kind: "command", text: "echo hello"},
+      outcome: "aborted_by_restart",
+      streaming_state: "closed",
+      transcript: "partial output\n[EXECUTION ABORTED]\n",
+      started_at: DateTime.utc_now(),
+      ended_at: DateTime.utc_now()
+    })
+
+    {:ok, _view, html} = live(conn, ~p"/executions/#{group.id}")
+
+    assert html =~ "partial output"
+    assert html =~ "ABORTED"
+  end
+
   test "ack event pushes updated position into the URL (STR-202)", %{conn: conn} do
     group = insert_group()
     {record, _stream_pid} = start_live_stream(group)
