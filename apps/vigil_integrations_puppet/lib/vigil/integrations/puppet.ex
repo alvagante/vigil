@@ -1,12 +1,11 @@
 defmodule Vigil.Integrations.Puppet do
   @moduledoc """
-  The Puppet integration plugin — issue #10 slice: PuppetDB-backed inventory +
-  facts, with mTLS auth, circuit breaker resilience, and server-side PQL
-  filtering (PRD §7, design §11).
+  The Puppet integration plugin — PuppetDB-backed inventory, facts, reports,
+  events, and catalogs with mTLS auth, circuit breaker resilience, and
+  server-side PQL filtering (PRD §7, design §11).
 
-  Capabilities in this slice: `:inventory`, `:facts`.
-  Out of scope here: Puppetserver client, Hiera, reports, events, catalogs
-  (#16, #17, #18).
+  Capabilities: `:inventory`, `:facts`, `:reports`, `:events`.
+  Out of scope: Puppetserver client, Hiera (#17, #18).
   """
 
   @behaviour Vigil.Plugin
@@ -14,7 +13,7 @@ defmodule Vigil.Integrations.Puppet do
   @behaviour Vigil.Plugin.Inventory
   @behaviour Vigil.Plugin.Facts
 
-  alias Vigil.Integrations.Puppet.{CircuitBreaker, ConfigServer, PQL}
+  alias Vigil.Integrations.Puppet.{Catalog, CatalogDiff, CircuitBreaker, ConfigServer, Event, PQL, Report, Resource}
   alias Vigil.Integrations.Puppet.PuppetDB.{Client, FinchHTTP}
   alias Vigil.Plugin.{Error, Node, Permission, Result, Schema, Source}
 
@@ -32,7 +31,7 @@ defmodule Vigil.Integrations.Puppet do
   def contract_version, do: Version.parse!("1.0.0")
 
   @impl Vigil.Plugin
-  def capabilities, do: [:inventory, :facts]
+  def capabilities, do: [:inventory, :facts, :reports, :events]
 
   @impl Vigil.Plugin
   def config_schema do
@@ -182,6 +181,101 @@ defmodule Vigil.Integrations.Puppet do
     end
   end
 
+  ## Reports (PUP-701..713)
+
+  def get_reports(integration_id, opts) do
+    filter = if is_map(opts), do: opts, else: %{}
+    pql = PQL.reports_query(filter)
+
+    case Client.query(integration_id, pql) do
+      {:ok, raw} ->
+        {:ok, ok_result(integration_id, Enum.map(raw, &normalize_report/1))}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error, transient_error(reason)}
+    end
+  end
+
+  ## Events (PUP-601..607)
+
+  def fetch_events(integration_id, certname, opts) do
+    time_range = Keyword.fetch!(opts, :time_range)
+    pql = PQL.events_query(certname, time_range)
+
+    case Client.query(integration_id, pql) do
+      {:ok, raw} ->
+        {:ok, ok_result(integration_id, Enum.map(raw, &normalize_event/1))}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error, transient_error(reason)}
+    end
+  end
+
+  ## Catalogs (PUP-401..403)
+
+  def get_catalog(integration_id, certname, _opts) do
+    pql = PQL.catalog_query(certname)
+
+    case Client.query(integration_id, pql) do
+      {:ok, [raw | _]} ->
+        {:ok, ok_result(integration_id, normalize_catalog(raw))}
+
+      {:ok, []} ->
+        {:error, %Error{category: :not_found, message: "no catalog found for #{certname}", retriable?: false}}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error, transient_error(reason)}
+    end
+  end
+
+  ## Catalog diff (PUP-404..405)
+
+  def compute_diff(%Catalog{} = cat_a, %Catalog{} = cat_b) do
+    map_a = Map.new(cat_a.resources, fn r -> {{r.type, r.title}, r} end)
+    map_b = Map.new(cat_b.resources, fn r -> {{r.type, r.title}, r} end)
+
+    keys_a = MapSet.new(Map.keys(map_a))
+    keys_b = MapSet.new(Map.keys(map_b))
+
+    only_in_a = for k <- MapSet.difference(keys_a, keys_b), do: map_a[k]
+    only_in_b = for k <- MapSet.difference(keys_b, keys_a), do: map_b[k]
+
+    {changed, identical_count} =
+      MapSet.intersection(keys_a, keys_b)
+      |> Enum.reduce({[], 0}, fn key, {changed_acc, count} ->
+        param_diffs = diff_params(map_a[key].parameters, map_b[key].parameters)
+
+        if map_size(param_diffs) == 0 do
+          {changed_acc, count + 1}
+        else
+          {[%{resource: map_a[key], param_diffs: param_diffs} | changed_acc], count}
+        end
+      end)
+
+    %CatalogDiff{
+      only_in_a: only_in_a,
+      only_in_b: only_in_b,
+      changed: changed,
+      identical_count: identical_count
+    }
+  end
+
+  def diff_catalogs(integration_id, node, _env_a, _env_b, opts) do
+    with {:ok, %{data: cat_a}} <- get_catalog(integration_id, node, opts),
+         {:ok, %{data: cat_b}} <- get_catalog(integration_id, node, opts) do
+      {:ok, compute_diff(cat_a, cat_b)}
+    end
+  end
+
   ## Vigil.Plugin.Health
 
   @impl Vigil.Plugin.Health
@@ -195,6 +289,83 @@ defmodule Vigil.Integrations.Puppet do
   end
 
   ## Internal
+
+  defp diff_params(params_a, params_b) do
+    all_keys = MapSet.new(Map.keys(params_a) ++ Map.keys(params_b))
+
+    Enum.reduce(all_keys, %{}, fn key, acc ->
+      val_a = Map.get(params_a, key)
+      val_b = Map.get(params_b, key)
+      if val_a == val_b, do: acc, else: Map.put(acc, key, %{in_a: val_a, in_b: val_b})
+    end)
+  end
+
+  defp normalize_catalog(raw) do
+    %Catalog{
+      certname: raw["certname"],
+      environment: raw["environment"],
+      version: raw["version"],
+      resources: Enum.map(raw["resources"] || [], &normalize_resource/1),
+      edges: raw["edges"] || []
+    }
+  end
+
+  defp normalize_resource(raw) do
+    %Resource{
+      type: raw["type"],
+      title: raw["title"],
+      parameters: raw["parameters"] || %{},
+      tags: raw["tags"] || [],
+      file: raw["file"],
+      line: raw["line"],
+      exported: raw["exported"] || false
+    }
+  end
+
+  defp normalize_event(raw) do
+    report_id = raw["report"]
+    resource_type = raw["resource_type"]
+    resource_title = raw["resource_title"]
+
+    %Event{
+      source_event_id: "#{report_id}:#{resource_type}[#{resource_title}]",
+      occurred_at: raw["timestamp"],
+      entry_type: "configuration_change",
+      summary: "#{resource_type}[#{resource_title}]: #{raw["message"]}",
+      severity: if(raw["status"] == "failure", do: :error, else: :informational),
+      detail: %{
+        resource_type: resource_type,
+        resource_title: resource_title,
+        old_value: raw["old_value"],
+        new_value: raw["new_value"],
+        file: raw["file"],
+        line: raw["line"],
+        containment_path: raw["containment_path"]
+      },
+      group_key: report_id,
+      references: %{report_id: report_id}
+    }
+  end
+
+  defp normalize_report(raw) do
+    %Report{
+      certname: raw["certname"],
+      hash: raw["hash"],
+      status: raw["status"],
+      start_time: raw["start_time"],
+      end_time: raw["end_time"],
+      run_duration: raw["run_duration"],
+      num_changes: raw["num_changes"],
+      num_failures: raw["num_failures"],
+      num_corrective_changes: raw["num_corrective_changes"],
+      num_skips: raw["num_skips"],
+      num_noops: raw["num_noops"],
+      noop: raw["noop"],
+      environment: raw["environment"],
+      catalog_uuid: raw["catalog_uuid"],
+      code_id: raw["code_id"]
+    }
+  end
 
   defp normalize_node(raw, integration_id) do
     certname = raw["certname"]

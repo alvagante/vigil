@@ -262,6 +262,279 @@ defmodule Vigil.Integrations.PuppetTest do
   end
 
   # ──────────────────────────────────────────────
+  # Tracer 7: get_reports (PUP-701..713)
+  # ──────────────────────────────────────────────
+
+  describe "get_reports/2 (PUP-701..713)" do
+    test "returns normalized report structs from PuppetDB",
+         %{id: id, config: config, agent: agent} do
+      FakePuppetDB.set_reports(agent, [
+        %{
+          "certname" => "web-01.example.com",
+          "status" => "changed",
+          "start_time" => "2026-06-30T10:00:00Z",
+          "end_time" => "2026-06-30T10:00:30Z",
+          "run_duration" => 30.5,
+          "num_changes" => 3,
+          "num_failures" => 0,
+          "num_corrective_changes" => 1,
+          "noop" => false,
+          "hash" => "abc123def456"
+        }
+      ])
+
+      start_instance(id, config)
+
+      assert {:ok, %Result{data: [report]}} = Puppet.get_reports(id, %{})
+
+      assert report.certname == "web-01.example.com"
+      assert report.status == "changed"
+      assert report.num_changes == 3
+      assert report.num_failures == 0
+      assert report.num_corrective_changes == 1
+      assert report.noop == false
+      assert report.hash == "abc123def456"
+    end
+
+    test "returns empty list when no reports in PuppetDB",
+         %{id: id, config: config, agent: agent} do
+      FakePuppetDB.set_reports(agent, [])
+      start_instance(id, config)
+
+      assert {:ok, %Result{data: []}} = Puppet.get_reports(id, %{})
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 8: fetch_events (PUP-601..607, TEST-203)
+  # ──────────────────────────────────────────────
+
+  describe "fetch_events/3 (PUP-601..607)" do
+    test "returns normalized events for a certname",
+         %{id: id, config: config, agent: agent} do
+      FakePuppetDB.set_events(agent, "web-01.example.com", [
+        %{
+          "certname" => "web-01.example.com",
+          "timestamp" => "2026-06-30T10:00:05Z",
+          "resource_type" => "File",
+          "resource_title" => "/etc/app/config.yml",
+          "status" => "success",
+          "old_value" => "absent",
+          "new_value" => "file",
+          "message" => "defined content as '{md5}abc'",
+          "file" => "site/modules/app/manifests/init.pp",
+          "line" => 12,
+          "containment_path" => ["Stage[main]", "App", "File[/etc/app/config.yml]"],
+          "report" => "report-hash-001"
+        }
+      ])
+
+      start_instance(id, config)
+
+      assert {:ok, %Result{data: [event]}} =
+               Puppet.fetch_events(id, "web-01.example.com", time_range: %{from: "2026-06-30T00:00:00Z", to: "2026-06-30T23:59:59Z"})
+
+      assert event.group_key == "report-hash-001"
+      assert event.entry_type == "configuration_change"
+      assert event.severity == :informational
+      assert event.detail.resource_type == "File"
+      assert event.detail.resource_title == "/etc/app/config.yml"
+      assert String.contains?(event.source_event_id, "report-hash-001")
+    end
+
+    test "TEST-203: noop run produces zero events (PUP-604 noop filter)",
+         %{id: id, config: config, agent: agent} do
+      # FakePuppetDB returns [] for certname — simulates PuppetDB server-side
+      # filtering: status in ["success", "failure"] excludes all noop events.
+      FakePuppetDB.set_events(agent, "noop-node.example.com", [])
+
+      start_instance(id, config)
+
+      assert {:ok, %Result{data: []}} =
+               Puppet.fetch_events(id, "noop-node.example.com", time_range: %{from: "2026-06-30T00:00:00Z", to: "2026-06-30T23:59:59Z"})
+    end
+
+    test "failure events have :error severity",
+         %{id: id, config: config, agent: agent} do
+      FakePuppetDB.set_events(agent, "web-01.example.com", [
+        %{
+          "certname" => "web-01.example.com",
+          "timestamp" => "2026-06-30T10:00:05Z",
+          "resource_type" => "Service",
+          "resource_title" => "nginx",
+          "status" => "failure",
+          "old_value" => "stopped",
+          "new_value" => "running",
+          "message" => "Could not start Service[nginx]",
+          "file" => nil,
+          "line" => nil,
+          "containment_path" => [],
+          "report" => "report-hash-002"
+        }
+      ])
+
+      start_instance(id, config)
+
+      assert {:ok, %Result{data: [event]}} =
+               Puppet.fetch_events(id, "web-01.example.com", time_range: %{from: "2026-06-30T00:00:00Z", to: "2026-06-30T23:59:59Z"})
+
+      assert event.severity == :error
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 9: get_catalog (PUP-401..403)
+  # ──────────────────────────────────────────────
+
+  describe "get_catalog/3 (PUP-401..403)" do
+    test "returns normalized catalog with resources for a certname",
+         %{id: id, config: config, agent: agent} do
+      FakePuppetDB.set_catalog(agent, "web-01.example.com", %{
+        "certname" => "web-01.example.com",
+        "environment" => "production",
+        "resources" => [
+          %{
+            "type" => "File",
+            "title" => "/etc/app/config.yml",
+            "parameters" => %{"ensure" => "file", "owner" => "root"},
+            "tags" => ["file", "app"],
+            "exported" => false,
+            "file" => "/etc/puppet/modules/app/manifests/init.pp",
+            "line" => 5
+          },
+          %{
+            "type" => "Package",
+            "title" => "nginx",
+            "parameters" => %{"ensure" => "installed"},
+            "tags" => ["package"],
+            "exported" => false,
+            "file" => nil,
+            "line" => nil
+          }
+        ],
+        "edges" => [
+          %{"source" => %{"type" => "Stage", "title" => "main"},
+            "target" => %{"type" => "File", "title" => "/etc/app/config.yml"},
+            "relationship" => "contains"}
+        ]
+      })
+
+      start_instance(id, config)
+
+      assert {:ok, %Result{data: catalog}} = Puppet.get_catalog(id, "web-01.example.com", [])
+
+      assert catalog.certname == "web-01.example.com"
+      assert catalog.environment == "production"
+      assert length(catalog.resources) == 2
+
+      file_res = Enum.find(catalog.resources, &(&1.type == "File"))
+      assert file_res.title == "/etc/app/config.yml"
+      assert file_res.parameters["ensure"] == "file"
+
+      assert length(catalog.edges) == 1
+    end
+
+    test "returns :not_found error when certname has no catalog in PuppetDB",
+         %{id: id, config: config} do
+      start_instance(id, config)
+
+      assert {:error, %Error{category: :not_found}} =
+               Puppet.get_catalog(id, "unknown.example.com", [])
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 10: compute_diff / diff_catalogs (PUP-404..405)
+  # ──────────────────────────────────────────────
+
+  describe "compute_diff/2 (PUP-404..405)" do
+    alias Vigil.Integrations.Puppet.{Catalog, Resource}
+
+    defp make_resource(type, title, params) do
+      %Resource{type: type, title: title, parameters: params, tags: [], exported: false}
+    end
+
+    test "resources only in A appear in only_in_a" do
+      cat_a = %Catalog{certname: "web-01", resources: [make_resource("Package", "nginx", %{"ensure" => "installed"})]}
+      cat_b = %Catalog{certname: "web-01", resources: []}
+
+      diff = Puppet.compute_diff(cat_a, cat_b)
+
+      assert length(diff.only_in_a) == 1
+      assert hd(diff.only_in_a).title == "nginx"
+      assert diff.only_in_b == []
+      assert diff.changed == []
+      assert diff.identical_count == 0
+    end
+
+    test "resources only in B appear in only_in_b" do
+      cat_a = %Catalog{certname: "web-01", resources: []}
+      cat_b = %Catalog{certname: "web-01", resources: [make_resource("Service", "nginx", %{"ensure" => "running"})]}
+
+      diff = Puppet.compute_diff(cat_a, cat_b)
+
+      assert diff.only_in_a == []
+      assert length(diff.only_in_b) == 1
+      assert hd(diff.only_in_b).title == "nginx"
+    end
+
+    test "resources with changed parameters appear in changed with param_diffs" do
+      cat_a = %Catalog{certname: "web-01", resources: [
+        make_resource("File", "/etc/app/config.yml", %{"ensure" => "file", "owner" => "root"})
+      ]}
+      cat_b = %Catalog{certname: "web-01", resources: [
+        make_resource("File", "/etc/app/config.yml", %{"ensure" => "file", "owner" => "deploy"})
+      ]}
+
+      diff = Puppet.compute_diff(cat_a, cat_b)
+
+      assert diff.only_in_a == []
+      assert diff.only_in_b == []
+      assert length(diff.changed) == 1
+      assert diff.identical_count == 0
+
+      [change] = diff.changed
+      assert change.resource.type == "File"
+      assert change.param_diffs["owner"] == %{in_a: "root", in_b: "deploy"}
+      refute Map.has_key?(change.param_diffs, "ensure")
+    end
+
+    test "identical resources increment identical_count" do
+      resource = make_resource("File", "/etc/app", %{"ensure" => "directory"})
+      cat = %Catalog{certname: "web-01", resources: [resource]}
+
+      diff = Puppet.compute_diff(cat, cat)
+
+      assert diff.only_in_a == []
+      assert diff.only_in_b == []
+      assert diff.changed == []
+      assert diff.identical_count == 1
+    end
+
+    test "mixed catalog diff counts all categories correctly" do
+      cat_a = %Catalog{certname: "web-01", resources: [
+        make_resource("Package", "nginx", %{"ensure" => "installed"}),
+        make_resource("File", "/etc/nginx/nginx.conf", %{"content" => "old"}),
+        make_resource("Service", "nginx", %{"ensure" => "running"})
+      ]}
+      cat_b = %Catalog{certname: "web-01", resources: [
+        make_resource("File", "/etc/nginx/nginx.conf", %{"content" => "new"}),
+        make_resource("Service", "nginx", %{"ensure" => "running"}),
+        make_resource("Exec", "reload-nginx", %{"command" => "/usr/sbin/nginx -s reload"})
+      ]}
+
+      diff = Puppet.compute_diff(cat_a, cat_b)
+
+      assert length(diff.only_in_a) == 1
+      assert hd(diff.only_in_a).type == "Package"
+      assert length(diff.only_in_b) == 1
+      assert hd(diff.only_in_b).type == "Exec"
+      assert length(diff.changed) == 1
+      assert diff.identical_count == 1
+    end
+  end
+
+  # ──────────────────────────────────────────────
   # mTLS option assembly (PUP-801, PUP-803)
   # ──────────────────────────────────────────────
 
