@@ -1,0 +1,6 @@
+---
+profile::base::ntp_servers:
+  - "2.rhel.pool.ntp.org"
+
+profile::base::tags:
+  - "rhel"

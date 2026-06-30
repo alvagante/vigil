@@ -1,0 +1,17 @@
+---
+profile::base::ntp_servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+
+profile::base::dns_servers:
+  - "8.8.8.8"
+
+profile::app::port: 8080
+
+profile::app::settings:
+  timeout: 30
+  retries: 3
+
+profile::base::tags:
+  - "prod"
+  - "managed"

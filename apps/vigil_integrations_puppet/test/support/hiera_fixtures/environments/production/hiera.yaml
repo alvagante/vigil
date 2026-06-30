@@ -1,0 +1,9 @@
+---
+version: 5
+hierarchy:
+  - name: "Per-node data"
+    path: "data/nodes/%{trusted.certname}.yaml"
+  - name: "OS family"
+    path: "data/os/%{facts.os.family}.yaml"
+  - name: "Common data"
+    path: "data/common.yaml"

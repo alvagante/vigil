@@ -4,8 +4,8 @@ defmodule Vigil.Integrations.Puppet do
   events, and catalogs with mTLS auth, circuit breaker resilience, and
   server-side PQL filtering (PRD §7, design §11).
 
-  Capabilities: `:inventory`, `:facts`, `:reports`, `:events`.
-  Out of scope: Puppetserver client, Hiera (#17, #18).
+  Capabilities: `:inventory`, `:facts`, `:reports`, `:events`, `:hiera`.
+  Out of scope: Puppetserver client, Hiera .pp static analysis (#18).
   """
 
   @behaviour Vigil.Plugin
@@ -13,7 +13,7 @@ defmodule Vigil.Integrations.Puppet do
   @behaviour Vigil.Plugin.Inventory
   @behaviour Vigil.Plugin.Facts
 
-  alias Vigil.Integrations.Puppet.{Catalog, CatalogDiff, CircuitBreaker, ConfigServer, Event, PQL, Report, Resource}
+  alias Vigil.Integrations.Puppet.{Catalog, CatalogDiff, CircuitBreaker, ConfigServer, Event, Hiera, PQL, Report, Resource}
   alias Vigil.Integrations.Puppet.PuppetDB.{Client, FinchHTTP}
   alias Vigil.Plugin.{Error, Node, Permission, Result, Schema, Source}
 
@@ -31,7 +31,7 @@ defmodule Vigil.Integrations.Puppet do
   def contract_version, do: Version.parse!("1.0.0")
 
   @impl Vigil.Plugin
-  def capabilities, do: [:inventory, :facts, :reports, :events]
+  def capabilities, do: [:inventory, :facts, :reports, :events, :hiera]
 
   @impl Vigil.Plugin
   def config_schema do
@@ -64,6 +64,19 @@ defmodule Vigil.Integrations.Puppet do
           type: :string,
           required: false,
           description: "Path to CA certificate file for TLS verification (PUP-803)."
+        },
+        %Field{
+          name: "control_repo.path",
+          type: :string,
+          required: false,
+          description: "Absolute path to the local control-repo checkout (required for Hiera — PUP-301)."
+        },
+        %Field{
+          name: "hiera.config_file",
+          type: :string,
+          required: false,
+          default: "hiera.yaml",
+          description: "Hiera config filename relative to the environment directory (PUP-301, default: hiera.yaml)."
         },
         %Field{
           name: "circuit_breaker.threshold",
@@ -273,6 +286,22 @@ defmodule Vigil.Integrations.Puppet do
     with {:ok, %{data: cat_a}} <- get_catalog(integration_id, node, opts),
          {:ok, %{data: cat_b}} <- get_catalog(integration_id, node, opts) do
       {:ok, compute_diff(cat_a, cat_b)}
+    end
+  end
+
+  ## Hiera (PUP-301..314)
+
+  def browse_hierarchy(integration_id, environment, _opts \\ []) do
+    case Hiera.Reader.read_hierarchy(integration_id, environment) do
+      {:ok, levels} -> {:ok, ok_result(integration_id, levels)}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  def resolve_key(integration_id, environment, key, node_context, opts \\ []) do
+    case Hiera.Reader.resolve_key(integration_id, environment, key, node_context, opts) do
+      {:ok, resolution} -> {:ok, ok_result(integration_id, resolution)}
+      {:error, %Error{} = error} -> {:error, error}
     end
   end
 

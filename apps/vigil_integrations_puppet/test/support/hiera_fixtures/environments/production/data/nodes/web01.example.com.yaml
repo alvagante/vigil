@@ -1,0 +1,6 @@
+---
+profile::app::port: 9090
+profile::app::settings:
+  timeout: 60
+  retries: 5
+  debug: true

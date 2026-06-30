@@ -2,8 +2,10 @@ defmodule Vigil.Integrations.PuppetTest do
   use ExUnit.Case, async: false
 
   alias Vigil.Integrations.Puppet
-  alias Vigil.Integrations.Puppet.FakePuppetDB
+  alias Vigil.Integrations.Puppet.{FakePuppetDB, Hiera.Resolution}
   alias Vigil.Plugin.{Catalog, Conformance, Error, Result, Source}
+
+  @fixtures_repo Path.expand("../../support/hiera_fixtures", __DIR__)
 
   # Wires FakePuppetDB as the HTTP transport; no real PuppetDB required.
   @test_config %{
@@ -610,6 +612,246 @@ defmodule Vigil.Integrations.PuppetTest do
       pql = PQL.facts_query(~s(evil"certname))
       refute String.contains?(pql, ~s("evil"certname"))
       assert String.contains?(pql, ~s(evil\\"certname))
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 11: browse_hierarchy (PUP-301..303)
+  # ──────────────────────────────────────────────
+
+  describe "browse_hierarchy/3 (PUP-301..303)" do
+    setup ctx do
+      hiera_config = Map.merge(ctx.config, %{"control_repo.path" => @fixtures_repo})
+      start_instance(ctx.id, hiera_config)
+      :ok
+    end
+
+    test "returns hierarchy levels for production environment", %{id: id} do
+      assert {:ok, %Result{data: levels}} = Puppet.browse_hierarchy(id, "production")
+
+      assert length(levels) == 3
+      names = Enum.map(levels, & &1.name)
+      assert "Per-node data" in names
+      assert "OS family" in names
+      assert "Common data" in names
+    end
+
+    test "levels carry raw path patterns (not interpolated)", %{id: id} do
+      assert {:ok, %Result{data: levels}} = Puppet.browse_hierarchy(id, "production")
+
+      per_node = Enum.find(levels, &(&1.name == "Per-node data"))
+      assert per_node.data_source_path == "data/nodes/%{trusted.certname}.yaml"
+    end
+
+    test "environment isolation: staging has only its own levels (PUP-303)", %{id: id} do
+      assert {:ok, %Result{data: prod_levels}} = Puppet.browse_hierarchy(id, "production")
+      assert {:ok, %Result{data: staging_levels}} = Puppet.browse_hierarchy(id, "staging")
+
+      assert length(staging_levels) == 1
+      assert length(prod_levels) == 3
+      assert hd(staging_levels).name == "Common data"
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 12: resolve_key :first strategy (PUP-311..312)
+  # ──────────────────────────────────────────────
+
+  describe "resolve_key/5 :first strategy (PUP-311..312)" do
+    setup ctx do
+      hiera_config = Map.merge(ctx.config, %{"control_repo.path" => @fixtures_repo})
+      start_instance(ctx.id, hiera_config)
+      :ok
+    end
+
+    test "key in common.yaml: found at last level, prior levels not_found", %{id: id} do
+      node_context = %{"trusted" => %{"certname" => "db01.example.com"}, "facts" => %{"os" => %{"family" => "Debian"}}}
+
+      assert {:ok, %Result{data: %Resolution{} = res}} =
+               Puppet.resolve_key(id, "production", "profile::base::dns_servers", node_context)
+
+      assert res.key == "profile::base::dns_servers"
+      assert res.merge_strategy == :first
+      assert res.result == ["8.8.8.8"]
+
+      # chain has 3 entries (one per hierarchy level)
+      assert length(res.chain) == 3
+
+      [per_node, os_fam, common] = res.chain
+      assert per_node.status == :not_found
+      assert os_fam.status == :not_found
+      assert common.status == :found
+      assert common.level == "Common data"
+    end
+
+    test "key absent from all levels returns nil result with full chain", %{id: id} do
+      node_context = %{"trusted" => %{"certname" => "x.example.com"}, "facts" => %{"os" => %{"family" => "Debian"}}}
+
+      assert {:ok, %Result{data: %Resolution{} = res}} =
+               Puppet.resolve_key(id, "production", "profile::nonexistent", node_context)
+
+      assert is_nil(res.result)
+      assert Enum.all?(res.chain, &(&1.status == :not_found))
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 13: path interpolation (PUP-314)
+  # ──────────────────────────────────────────────
+
+  describe "resolve_key/5 path interpolation (PUP-314)" do
+    setup ctx do
+      hiera_config = Map.merge(ctx.config, %{"control_repo.path" => @fixtures_repo})
+      start_instance(ctx.id, hiera_config)
+      :ok
+    end
+
+    test "interpolates %{trusted.certname} in per-node path", %{id: id} do
+      # web01.example.com has a node-specific file with port 9090
+      node_context = %{
+        "trusted" => %{"certname" => "web01.example.com"},
+        "facts" => %{"os" => %{"family" => "Debian"}}
+      }
+
+      assert {:ok, %Result{data: %Resolution{} = res}} =
+               Puppet.resolve_key(id, "production", "profile::app::port", node_context)
+
+      # per-node data wins over common.yaml (which has 8080)
+      assert res.result == 9090
+      [per_node | _] = res.chain
+      assert per_node.status == :found
+      assert per_node.interpolated == "data/nodes/web01.example.com.yaml"
+    end
+
+    test "interpolates %{facts.os.family} and resolves from OS-level file", %{id: id} do
+      # RedHat.yaml has ntp_servers override; node file doesn't exist
+      node_context = %{
+        "trusted" => %{"certname" => "db01.rhel.example.com"},
+        "facts" => %{"os" => %{"family" => "RedHat"}}
+      }
+
+      assert {:ok, %Result{data: %Resolution{} = res}} =
+               Puppet.resolve_key(id, "production", "profile::base::ntp_servers", node_context)
+
+      # OS-level overrides common for RedHat
+      assert res.result == ["2.rhel.pool.ntp.org"]
+      [_per_node, os_fam | _] = res.chain
+      assert os_fam.status == :found
+      assert os_fam.interpolated == "data/os/RedHat.yaml"
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 14: merge strategies (PUP-313)
+  # ──────────────────────────────────────────────
+
+  describe "resolve_key/5 merge strategies (PUP-313)" do
+    setup ctx do
+      hiera_config = Map.merge(ctx.config, %{"control_repo.path" => @fixtures_repo})
+      start_instance(ctx.id, hiera_config)
+      :ok
+    end
+
+    # web01 has: {timeout: 60, retries: 5, debug: true}
+    # common has: {timeout: 30, retries: 3}
+    # hash merge: per-node wins for shared keys; debug only from per-node
+    test ":hash merge — higher priority level wins for duplicate keys", %{id: id} do
+      node_context = %{
+        "trusted" => %{"certname" => "web01.example.com"},
+        "facts" => %{"os" => %{"family" => "Debian"}}
+      }
+
+      assert {:ok, %Result{data: %Resolution{} = res}} =
+               Puppet.resolve_key(id, "production", "profile::app::settings", node_context,
+                 merge: :hash
+               )
+
+      assert res.merge_strategy == :hash
+      assert res.result["timeout"] == 60
+      assert res.result["retries"] == 5
+      assert res.result["debug"] == true
+    end
+
+    # RedHat OS has: ["2.rhel.pool.ntp.org"]
+    # common has: ["0.pool.ntp.org", "1.pool.ntp.org"]
+    # unique merge: all values, deduplicated, higher-priority first
+    test ":unique merge — arrays from all levels deduplicated", %{id: id} do
+      node_context = %{
+        "trusted" => %{"certname" => "db01.rhel.example.com"},
+        "facts" => %{"os" => %{"family" => "RedHat"}}
+      }
+
+      assert {:ok, %Result{data: %Resolution{} = res}} =
+               Puppet.resolve_key(id, "production", "profile::base::ntp_servers", node_context,
+                 merge: :unique
+               )
+
+      assert res.merge_strategy == :unique
+      assert "2.rhel.pool.ntp.org" in res.result
+      assert "0.pool.ntp.org" in res.result
+      assert "1.pool.ntp.org" in res.result
+      assert Enum.uniq(res.result) == res.result
+    end
+
+    # deep merge: same key test as hash but verifies nested maps merged recursively
+    test ":deep merge — nested maps merged with higher-priority winning", %{id: id} do
+      node_context = %{
+        "trusted" => %{"certname" => "web01.example.com"},
+        "facts" => %{"os" => %{"family" => "Debian"}}
+      }
+
+      assert {:ok, %Result{data: %Resolution{} = res}} =
+               Puppet.resolve_key(id, "production", "profile::app::settings", node_context,
+                 merge: :deep
+               )
+
+      assert res.merge_strategy == :deep
+      # per-node value 60 must win over common's 30
+      assert res.result["timeout"] == 60
+      # key only in common still appears
+      assert res.result["retries"] == 5
+      # key only in per-node
+      assert res.result["debug"] == true
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 15: Error handling (AC: missing repo, malformed YAML)
+  # ──────────────────────────────────────────────
+
+  describe "Hiera error handling" do
+    test "browse_hierarchy returns config_error when control_repo.path not set", %{
+      id: id,
+      config: config
+    } do
+      start_instance(id, config)
+
+      assert {:error, %Error{category: :config_error}} = Puppet.browse_hierarchy(id, "production")
+    end
+
+    test "browse_hierarchy returns not_found for unknown environment", %{id: id, config: config} do
+      hiera_config = Map.merge(config, %{"control_repo.path" => @fixtures_repo})
+      start_instance(id, hiera_config)
+
+      assert {:error, %Error{category: :not_found}} =
+               Puppet.browse_hierarchy(id, "nonexistent_env")
+    end
+
+    test "browse_hierarchy returns parse_error for malformed YAML", %{id: id, config: config} do
+      # point to a dir where the hiera.yaml is broken
+      # write a bad hiera.yaml in a temp location
+      tmp = System.tmp_dir!()
+      bad_env_path = Path.join([tmp, "bad_fixtures", "environments", "production"])
+      File.mkdir_p!(bad_env_path)
+      File.write!(Path.join(bad_env_path, "hiera.yaml"), ":\n  - bad: [yaml: here")
+
+      bad_config =
+        Map.merge(config, %{"control_repo.path" => Path.join([tmp, "bad_fixtures"])})
+
+      start_instance(id, bad_config)
+
+      assert {:error, %Error{category: :parse_error}} =
+               Puppet.browse_hierarchy(id, "production")
     end
   end
 end

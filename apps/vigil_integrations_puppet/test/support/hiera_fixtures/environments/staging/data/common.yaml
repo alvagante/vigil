@@ -1,0 +1,5 @@
+---
+profile::app::port: 8081
+
+profile::base::ntp_servers:
+  - "staging.ntp.example.com"

@@ -31,7 +31,8 @@ defmodule Vigil.Integrations.Puppet.MixProject do
     [
       {:vigil_plugin, in_umbrella: true},
       {:finch, "~> 0.19"},
-      {:jason, "~> 1.2"}
+      {:jason, "~> 1.2"},
+      {:yaml_elixir, "~> 2.9"}
     ]
   end
 end
