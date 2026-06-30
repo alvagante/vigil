@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main, devel]
+  pull_request:
+    branches: [main]
+
+env:
+  ELIXIR_VERSION: "1.19.5"
+  OTP_VERSION: "28.0"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-lint-${{ hashFiles('**/mix.lock') }}
+      - run: mix deps.get
+      - run: mix compile
+      - run: mix format --check-formatted
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-test-${{ hashFiles('**/mix.lock') }}
+      - run: mix deps.get
+      - run: mix test
+
+  docker-smoke:
+    name: Container smoke test
+    runs-on: ubuntu-24.04
+    needs: [lint, test]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vigil_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        run: docker build -t vigil:ci .
+      - name: Generate ephemeral secret
+        run: echo "CI_SECRET=$(openssl rand -hex 64)" >> $GITHUB_ENV
+      - name: Run migrations
+        run: |
+          docker run --rm --network host \
+            -e DATABASE_URL=ecto://postgres:postgres@localhost/vigil_ci \
+            -e SECRET_KEY_BASE=$CI_SECRET \
+            vigil:ci bin/vigil eval "Vigil.Release.migrate()"
+      - name: Start app
+        run: |
+          docker run -d --name vigil-smoke --network host \
+            -e DATABASE_URL=ecto://postgres:postgres@localhost/vigil_ci \
+            -e SECRET_KEY_BASE=$CI_SECRET \
+            -e PORT=4000 \
+            vigil:ci
+      - name: Health check
+        run: |
+          for i in $(seq 1 30); do
+            result=$(curl -sf http://localhost:4000/_health 2>/dev/null) && break
+            echo "Attempt $i: waiting..."
+            sleep 2
+          done
+          echo "$result" | grep -q '"status":"ok"' || (echo "Health check failed: $result" && exit 1)
+      - name: Dump logs on failure
+        if: failure()
+        run: docker logs vigil-smoke 2>&1 || true
