@@ -211,12 +211,77 @@ defmodule Vigil.Core.JournalTest do
   end
 
   # ──────────────────────────────────────────────
+  # Tracer 3a: local_entries_global — node filter (JRN-102)
+  # ──────────────────────────────────────────────
+
+  describe "local_entries_global/1 node filter" do
+    test "node_id filter returns only entries for that node" do
+      {:ok, _} = Journal.create_execution_entry(%{node_id: "node-x", summary: "x-entry", occurred_at: DateTime.utc_now()})
+      {:ok, _} = Journal.create_execution_entry(%{node_id: "node-y", summary: "y-entry", occurred_at: DateTime.utc_now()})
+
+      entries = Journal.local_entries_global(%{node_id: "node-x"})
+      assert Enum.all?(entries, fn e -> e.node_id == "node-x" end)
+      assert Enum.any?(entries, fn e -> e.summary == "x-entry" end)
+      refute Enum.any?(entries, fn e -> e.summary == "y-entry" end)
+    end
+
+    test "node_ids filter returns only entries for those nodes" do
+      {:ok, _} = Journal.create_execution_entry(%{node_id: "node-1", summary: "n1", occurred_at: DateTime.utc_now()})
+      {:ok, _} = Journal.create_execution_entry(%{node_id: "node-2", summary: "n2", occurred_at: DateTime.utc_now()})
+      {:ok, _} = Journal.create_execution_entry(%{node_id: "node-3", summary: "n3", occurred_at: DateTime.utc_now()})
+
+      entries = Journal.local_entries_global(%{node_ids: ["node-1", "node-2"]})
+      assert Enum.all?(entries, fn e -> e.node_id in ["node-1", "node-2"] end)
+      refute Enum.any?(entries, fn e -> e.node_id == "node-3" end)
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # Tracer 4a: Notes.delete/2 soft-delete (DM-501 + audit)
+  # ──────────────────────────────────────────────
+
+  describe "Notes.delete/2" do
+    test "soft-deletes the entry (sets deleted_at)" do
+      principal = make_principal()
+      {:ok, entry} = Journal.Notes.create(principal, %{node_id: "node-a", summary: "to be deleted"})
+
+      assert {:ok, deleted} = Journal.Notes.delete(principal, entry.id)
+      assert deleted.deleted_at != nil
+
+      entries = Journal.local_entries("node-a", %{})
+      refute Enum.any?(entries, fn e -> e.id == entry.id end)
+    end
+
+    test "returns {:error, :unauthorized} for non-author" do
+      author = make_principal()
+      other = make_principal(suffix: "other2")
+
+      {:ok, entry} = Journal.Notes.create(author, %{node_id: "node-a", summary: "mine"})
+
+      assert {:error, :unauthorized} = Journal.Notes.delete(other, entry.id)
+
+      entries = Journal.local_entries("node-a", %{})
+      assert Enum.any?(entries, fn e -> e.id == entry.id end)
+    end
+
+    test "deleted entry does not appear in local_entries_global" do
+      principal = make_principal()
+      {:ok, entry} = Journal.Notes.create(principal, %{node_id: "node-del", summary: "gone"})
+      {:ok, _} = Journal.Notes.delete(principal, entry.id)
+
+      global = Journal.local_entries_global(%{})
+      refute Enum.any?(global, fn e -> e.id == entry.id end)
+    end
+  end
+
+  # ──────────────────────────────────────────────
   # Tracer 5: PubSub broadcast on create
   # ──────────────────────────────────────────────
 
   describe "PubSub" do
-    test "create_execution_entry/1 broadcasts to journal:node:<node_id>" do
+    test "create_execution_entry/1 broadcasts to journal:node and journal:global" do
       Phoenix.PubSub.subscribe(Vigil.PubSub, "journal:node:node-pub-01")
+      Phoenix.PubSub.subscribe(Vigil.PubSub, "journal:global")
 
       assert {:ok, entry} =
                Journal.create_execution_entry(%{
@@ -226,6 +291,36 @@ defmodule Vigil.Core.JournalTest do
                })
 
       assert_receive {:journal_entry_created, ^entry}, 500
+      assert_receive {:journal_entry_created, ^entry}, 500
+    end
+
+    test "Notes.create/2 broadcasts to journal:node and journal:global" do
+      Phoenix.PubSub.subscribe(Vigil.PubSub, "journal:node:node-note-pub")
+      Phoenix.PubSub.subscribe(Vigil.PubSub, "journal:global")
+
+      principal = make_principal()
+
+      assert {:ok, entry} =
+               Journal.Notes.create(principal, %{
+                 node_id: "node-note-pub",
+                 summary: "note broadcast"
+               })
+
+      assert_receive {:journal_entry_created, ^entry}, 500
+      assert_receive {:journal_entry_created, ^entry}, 500
+    end
+
+    test "Notes.delete/2 broadcasts :journal_entry_deleted to journal:global" do
+      Phoenix.PubSub.subscribe(Vigil.PubSub, "journal:global")
+
+      principal = make_principal()
+      {:ok, entry} = Journal.Notes.create(principal, %{node_id: "node-del-pub", summary: "bye"})
+
+      # clear the create broadcast
+      assert_receive {:journal_entry_created, _}, 500
+
+      {:ok, deleted} = Journal.Notes.delete(principal, entry.id)
+      assert_receive {:journal_entry_deleted, ^deleted}, 500
     end
   end
 

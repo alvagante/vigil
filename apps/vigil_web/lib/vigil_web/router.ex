@@ -44,6 +44,11 @@ defmodule VigilWeb.Router do
       live "/inventory/node/:id/:tab", NodeDetailLive
     end
 
+    live_session :journal_access,
+      on_mount: [{VigilWeb.LiveAuth, {:require_permission, "journal:read"}}] do
+      live "/journal", GlobalTimelineLive
+    end
+
     live_session :health_access,
       on_mount: [{VigilWeb.LiveAuth, {:require_permission, "integration:health:read"}}] do
       live "/health", Live.HealthLive

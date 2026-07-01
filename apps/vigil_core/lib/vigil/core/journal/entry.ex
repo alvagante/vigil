@@ -13,6 +13,7 @@ defmodule Vigil.Core.Journal.Entry do
     field(:detail, :map)
     field(:severity, :string, default: "informational")
     field(:occurred_at, :utc_datetime_usec)
+    field(:deleted_at, :utc_datetime_usec)
 
     belongs_to(:execution, Vigil.Core.Execution.Record,
       foreign_key: :execution_id,
@@ -28,7 +29,7 @@ defmodule Vigil.Core.Journal.Entry do
   end
 
   @required [:node_id, :entry_type, :summary]
-  @optional [:detail, :severity, :occurred_at, :execution_id, :author_user_id, :tenant_id]
+  @optional [:detail, :severity, :occurred_at, :execution_id, :author_user_id, :tenant_id, :deleted_at]
 
   def execution_changeset(entry, attrs) do
     entry
@@ -46,6 +47,10 @@ defmodule Vigil.Core.Journal.Entry do
     |> put_default_occurred_at()
     |> validate_required(@required)
     |> validate_inclusion(:severity, ~w(informational notice warning error))
+  end
+
+  def soft_delete_changeset(entry) do
+    change(entry, deleted_at: DateTime.utc_now())
   end
 
   defp put_default_occurred_at(changeset) do

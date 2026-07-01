@@ -13,6 +13,7 @@ defmodule Vigil.Core.Journal do
 
   defdelegate create(principal, attrs), to: Vigil.Core.Journal.Notes
   defdelegate update(principal, entry_id, changes), to: Vigil.Core.Journal.Notes
+  defdelegate delete(principal, entry_id), to: Vigil.Core.Journal.Notes
   defdelegate revisions(entry_id), to: Vigil.Core.Journal.Notes
 
   @doc "Create one journal entry for a completed execution target (design §7.8)."
@@ -24,12 +25,9 @@ defmodule Vigil.Core.Journal do
 
     case result do
       {:ok, entry} ->
-        Phoenix.PubSub.broadcast(
-          Vigil.PubSub,
-          "journal:node:#{entry.node_id}",
-          {:journal_entry_created, entry}
-        )
-
+        msg = {:journal_entry_created, entry}
+        Phoenix.PubSub.broadcast(Vigil.PubSub, "journal:node:#{entry.node_id}", msg)
+        Phoenix.PubSub.broadcast(Vigil.PubSub, "journal:global", msg)
         {:ok, entry}
 
       error ->
@@ -55,10 +53,15 @@ defmodule Vigil.Core.Journal do
 
   defp apply_filters(query, filters) do
     query
+    |> exclude_deleted()
     |> filter_entry_type(filters[:entry_type])
     |> filter_severity(filters[:severity])
     |> filter_time_range(filters[:time_range])
+    |> filter_node(filters[:node_id])
+    |> filter_nodes(filters[:node_ids])
   end
+
+  defp exclude_deleted(q), do: from(e in q, where: is_nil(e.deleted_at))
 
   defp filter_entry_type(q, nil), do: q
   defp filter_entry_type(q, t), do: from(e in q, where: e.entry_type == ^t)
@@ -69,4 +72,11 @@ defmodule Vigil.Core.Journal do
   defp filter_time_range(q, nil), do: q
   defp filter_time_range(q, {from, nil}), do: from(e in q, where: e.occurred_at >= ^from)
   defp filter_time_range(q, {from, to}), do: from(e in q, where: e.occurred_at >= ^from and e.occurred_at <= ^to)
+
+  defp filter_node(q, nil), do: q
+  defp filter_node(q, node_id), do: from(e in q, where: e.node_id == ^node_id)
+
+  defp filter_nodes(q, nil), do: q
+  defp filter_nodes(q, []), do: q
+  defp filter_nodes(q, ids), do: from(e in q, where: e.node_id in ^ids)
 end
