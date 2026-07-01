@@ -7,7 +7,9 @@ defmodule Vigil.Core.Supervisor do
 
   @impl true
   def init(_opts) do
-    children = []
+    children = [
+      Vigil.Core.Inventory.Linker
+    ]
 
     Supervisor.init(children, strategy: :rest_for_one)
   end

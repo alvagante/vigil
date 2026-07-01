@@ -91,6 +91,7 @@ defmodule Vigil.Core.Cache.Server do
     key = cache_key(integration_id, capability, action, args)
     entry = Entry.new(data, source_attribution, ttl_ms)
     :ets.insert(@table, {key, entry})
+
     {:reply, :ok, state}
   end
 
